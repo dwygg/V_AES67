@@ -8,7 +8,7 @@
 | 日期 | 阶段 | 状态 | git tag | 结果 / 备注 |
 |---|---|:---:|---|---|
 | 2026-07-19 | — | — | — | 文档基线：`方案设计.md` / `开发计划.md` / `CODE_REVIEW.md` 定稿；引入本进度机制 |
-| 2026-07-19 | P1 清理驱动 Scream 残留 | 🚧 进行中 | `p1-done`(待打) | 删 WSK 组播 / ivshmem / 换皮标识；死缓冲与空壳 IOCTL 标注为 P9 占位 |
+| 2026-07-19 | P1 清理驱动 Scream 残留 | 🚧 待编译验证 | `p1-done`(待打) | 代码已改完（分支 `feature/dev-fix`）：删 WSK 组播发包引擎 + ivshmem（净删 ~1250 行）；CSaveData 掏空为哑 sink（保留公共接口签名）；网络全局变量/注册表项全删；换皮标识（PoolTag→AS67 / .rc / .inf / DriverVer）；死缓冲、空壳 IOCTL、符号链接、METHOD 不一致均标注 `TODO(P9)`。**待 Windows 编译加载通过后打 tag、合 main** |
 
 ---
 

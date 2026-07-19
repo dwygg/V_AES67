@@ -31,21 +31,18 @@ NTSTATUS CreateMiniportWaveCyclicAES67(OUT PUNKNOWN *, IN  REFCLSID, IN  PUNKNOW
 NTSTATUS CreateMiniportTopologyAES67(OUT PUNKNOWN *, IN  REFCLSID, IN  PUNKNOWN, IN  POOL_TYPE);
 
 // ---- 共享内存 ----
+// TODO(P9): 这块非分页缓冲目前是"死缓冲"——已分配、清零、可通过 IOCTL 返回物理
+//           地址，但内核侧尚无任何代码往里写音频。P9 打通 IOCTL + 共享内存主动脉
+//           时，CSaveData::WriteData() 的 PCM 帧会落到这里，供用户态引擎映射读取。
 static PVOID g_SharedBuffer = NULL;       // 非分页共享内存
 static ULONG g_SharedBufferSize = 0x10000; // 64KB (4x 10ms @48kHz 2ch L24)
 
+// TODO(P9): 预留给"用户态发现内核 IOCTL 接口"的符号链接。目前只声明未使用——
+//           P9 打通主动脉时，用 IoCreateSymbolicLink / IoRegisterDeviceInterface
+//           把 GUID_AES67_IOCTL_INTERFACE 暴露出去，用户态引擎才能打开设备发 IOCTL。
 UNICODE_STRING g_AES67SymbolicLink = {0};
-PCHAR g_UnicastSrcIPv4;
-DWORD g_UnicastSrcPort;
 
-PCHAR g_UnicastIPv4;
-DWORD g_UnicastPort;
-//0 = false, otherwhise it's value is the size in MiB of the IVSHMEM we want to use
-UINT8 g_UseIVSHMEM;
 DWORD g_silenceThreshold;
-
-DWORD g_DSCP;
-DWORD g_TTL;
 DWORD g_AES67DriverVersion;
 
 //-----------------------------------------------------------------------------
@@ -88,29 +85,15 @@ Returns:
     NTSTATUS            ntStatus;
     UNICODE_STRING      parametersPath;
 
-    UNICODE_STRING      unicastIPv4;
-    DWORD               unicastPort = 0;
-    DWORD               useIVSHMEM = 0;
-    
-	  UNICODE_STRING      unicastSrcIPv4;
-	  DWORD               unicastSrcPort = 0;
-	  DWORD               DSCP = 0;
-	  DWORD               TTL = 0;
-	  DWORD               AES67DriverVersion = 0;
+    // NOTE (P1): all the network-related settings (UnicastIPv4/Port, source
+    // address, DSCP, TTL, UseIVSHMEM) belonged to the removed kernel WSK sender.
+    // The kernel driver no longer does any network I/O, so they are gone. Any
+    // AES67 transport configuration lives in the user-space engine now.
+    DWORD               AES67DriverVersion = 0;
     DWORD               silenceThreshold = 0;
 
-    RtlZeroMemory(&unicastIPv4, sizeof(UNICODE_STRING));
-	  RtlZeroMemory(&unicastSrcIPv4, sizeof(UNICODE_STRING));
-
     RTL_QUERY_REGISTRY_TABLE paramTable[] = {
-        { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"UnicastIPv4", &unicastIPv4, REG_NONE,  NULL, 0 },
-        { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"UnicastPort", &unicastPort, REG_NONE,  NULL, 0 },
-        { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"UseIVSHMEM", &useIVSHMEM, REG_NONE,  NULL, 0 },
-	      { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"UnicastSrcIPv4", &unicastSrcIPv4, REG_NONE,  NULL, 0 },
-		    { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"UnicastSrcPort", &unicastSrcPort, REG_NONE,  NULL, 0 },
-		    { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"DSCP", &DSCP, REG_NONE,  NULL, 0 },
-		    { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"TTL", &TTL, REG_NONE,  NULL, 0 },
-		    { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"Version", &AES67DriverVersion, REG_NONE,  NULL, 0 },
+        { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"Version", &AES67DriverVersion, REG_NONE,  NULL, 0 },
         { NULL,   RTL_QUERY_REGISTRY_DIRECT, L"SilenceThreshold", &silenceThreshold, REG_NONE,  NULL, 0 },
         { NULL,   0,                         NULL,           NULL,         0,         NULL, 0 }
     };
@@ -157,109 +140,12 @@ Returns:
         g_silenceThreshold = 0;
     }
 
-    if (unicastPort > 0) {
-        g_UnicastPort = unicastPort;
+    if (AES67DriverVersion > 0) {
+        g_AES67DriverVersion = AES67DriverVersion;
     }
     else {
-        g_UnicastPort = 4010;
+        g_AES67DriverVersion = 0;
     }
-
-	if (unicastSrcPort > 0) {
-		g_UnicastSrcPort = unicastSrcPort;
-	}
-	else {
-		g_UnicastSrcPort = 0;  // 0 = use an ephemeral port. Should this be default?
-	}
-
-	if (DSCP > 0) {
-		g_DSCP = DSCP & 0x3f;
-	}
-	else {
-		g_DSCP = 0;
-	}
-
-	if (TTL > 0 && TTL < 256) {
-		g_TTL = TTL;
-	}
-	else {
-		g_TTL = 0;  
-	}
-
-	if (AES67DriverVersion > 0) {
-		g_AES67DriverVersion = AES67DriverVersion;
-	}
-	else {
-		g_AES67DriverVersion = 0;  
-	}
-
-    if ((unicastIPv4.Length > 0) && RtlUnicodeStringToAnsiSize(&unicastIPv4)) {
-        g_UnicastIPv4 = (PCHAR)(ExAllocatePoolWithTag(NonPagedPool, RtlUnicodeStringToAnsiSize(&unicastIPv4) + 1, AES67_POOLTAG));
-        if (g_UnicastIPv4) {
-            ANSI_STRING asString;
-            asString.Length = 0;
-            asString.MaximumLength = (USHORT)RtlUnicodeStringToAnsiSize(&unicastIPv4);
-            asString.Buffer = g_UnicastIPv4;
-            ntStatus = RtlUnicodeStringToAnsiString(&asString, &unicastIPv4, false);
-            if (NT_SUCCESS(ntStatus)) {
-                // Halleluja
-                g_UnicastIPv4[asString.Length] = '\0';
-            }
-            else {
-                ExFreePool(g_UnicastIPv4);
-                g_UnicastIPv4 = NULL;
-            }
-        }
-        else {
-            ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-        }
-    }
-
-    if (g_UnicastIPv4 == NULL) {
-        g_UnicastIPv4 = (PCHAR)(ExAllocatePoolWithTag(NonPagedPool, 16, AES67_POOLTAG));
-        if (g_UnicastIPv4) {
-            RtlCopyMemory(g_UnicastIPv4, "239.255.77.77", 13);
-            g_UnicastIPv4[13] = '\0';
-        }
-        else {
-            ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-        }
-    }
-
-// same as above for source IP
-	if ((unicastSrcIPv4.Length > 0) && RtlUnicodeStringToAnsiSize(&unicastSrcIPv4)) {
-		g_UnicastSrcIPv4 = (PCHAR)(ExAllocatePoolWithTag(NonPagedPool, RtlUnicodeStringToAnsiSize(&unicastSrcIPv4) + 1, AES67_POOLTAG));
-		if (g_UnicastSrcIPv4) {
-			ANSI_STRING asString;
-			asString.Length = 0;
-			asString.MaximumLength = (USHORT)RtlUnicodeStringToAnsiSize(&unicastSrcIPv4);
-			asString.Buffer = g_UnicastSrcIPv4;
-			ntStatus = RtlUnicodeStringToAnsiString(&asString, &unicastSrcIPv4, false);
-			if (NT_SUCCESS(ntStatus)) {
-				// Halleluja
-				g_UnicastSrcIPv4[asString.Length] = '\0';
-			}
-			else {
-				ExFreePool(g_UnicastSrcIPv4);
-				g_UnicastSrcIPv4 = NULL;
-			}
-		}
-		else {
-			ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-		}
-	}
-
-	if (g_UnicastSrcIPv4 == NULL) {
-		g_UnicastSrcIPv4 = (PCHAR)(ExAllocatePoolWithTag(NonPagedPool, 16, AES67_POOLTAG));
-		if (g_UnicastSrcIPv4) {
-			RtlCopyMemory(g_UnicastSrcIPv4, "0.0.0.0", 7);
-			g_UnicastSrcIPv4[7] = '\0';
-		}
-		else {
-			ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-		}
-	}
-
-    g_UseIVSHMEM = (UINT8)useIVSHMEM;
 
     ExFreePool(parametersPath.Buffer);
 
@@ -271,6 +157,14 @@ Returns:
 //=============================================================================
 #pragma code_seg("INIT")
 // ---- 自定义 IOCTL 分发 ----
+//
+// TODO(P9): 这是"内核↔用户态主动脉"的骨架，目前还是空壳：
+//   - IOCTL_AES67_GET_BUFFER 能返回 g_SharedBuffer 的物理地址，但那块缓冲当前
+//     没有任何音频写入（见 §共享内存 的 TODO(P9)），映射后读到的是全零。
+//   - IOCTL_AES67_GET_POSITION / IOCTL_AES67_SET_FORMAT 目前直接返回成功，
+//     没有真正的读写指针推进和格式协商。
+//   P9 阶段：把 CSaveData::WriteData() 的 PCM 帧写入 g_SharedBuffer 环形缓冲，
+//   在此维护 ReadOffset/WriteOffset，并让 SET_FORMAT 真正生效。
 static PDRIVER_DISPATCH g_PortClsDeviceControl;  // 保存 PortCls 原 handler
 
 // 共享内存描述结构（通过 IOCTL GET_BUFFER 返回给用户态）
@@ -578,6 +472,8 @@ Return Value:
     }
 
     // 分配共享内存（非分页，用户态可通过 IOCTL 映射访问）
+    // TODO(P9): 目前只是分配+清零的"死缓冲"，内核侧没有写入者。P9 打通主动脉后，
+    //           CSaveData::WriteData() 的 PCM 帧写入这里，用户态引擎映射读取。
     if (NT_SUCCESS(ntStatus) && !g_SharedBuffer) {
         g_SharedBuffer = ExAllocatePool2(POOL_FLAG_NON_PAGED,
             g_SharedBufferSize, AES67_POOLTAG);

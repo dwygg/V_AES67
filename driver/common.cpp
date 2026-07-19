@@ -14,16 +14,12 @@ Abstract:
 #include "common.h"
 #include "hw.h"
 #include "savedata.h"
-#include "ivshmemsavedata.h"
 
 //-----------------------------------------------------------------------------
 // Externals
 //-----------------------------------------------------------------------------
 PSAVEWORKER_PARAM CSaveData::m_pWorkItem = NULL;
 PDEVICE_OBJECT    CSaveData::m_pDeviceObject = NULL;
-
-PIVSHMEM_SAVEWORKER_PARAM    CIVSHMEMSaveData::m_pWorkItem = NULL;
-PDEVICE_OBJECT               CIVSHMEMSaveData::m_pDeviceObject = NULL;
 
 //=============================================================================
 // Classes
@@ -132,12 +128,7 @@ Return Value:
         delete m_pHW;
     }
 
-    if (g_UseIVSHMEM) {
-        CIVSHMEMSaveData::DestroyWorkItems();
-    }
-    else {
-        CSaveData::DestroyWorkItems();
-    }
+    CSaveData::DestroyWorkItems();
 
     if (m_pPortWave) {
         m_pPortWave->Release();
@@ -198,12 +189,7 @@ Return Value:
         m_pHW->MixerReset();
     }
 
-    if (g_UseIVSHMEM) {
-        CIVSHMEMSaveData::SetDeviceObject(DeviceObject); //device object is needed by CIVSHMEMSaveData
-    }
-    else {
-        CSaveData::SetDeviceObject(DeviceObject); //device object is needed by CSaveData
-    }
+    CSaveData::SetDeviceObject(DeviceObject); //device object is needed by CSaveData
 
     return ntStatus;
 } // Init

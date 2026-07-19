@@ -12,7 +12,6 @@ Abstract:
 #define _AES67_MINSTREAM_H_
 
 #include "savedata.h"
-#include "ivshmemsavedata.h"
 
 //=============================================================================
 // Referenced Forward
@@ -49,7 +48,6 @@ protected:
     ULONG                       m_ulByteDisplacementCarryForward;   // Bytes to carry forward to next calc.
 
     CSaveData                   m_SaveData;                         // Object to save settings.
-    CIVSHMEMSaveData            m_IVSHMEMSaveData;                  // Object to save settings if we are using IVSHMEM.
 
     ULONGLONG                   m_silenceState = 0;                 // 0 = Not Silent, >g_silenceThreshold=Silent,
                                                                     // values lower than threshold = Gap

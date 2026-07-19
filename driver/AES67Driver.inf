@@ -3,7 +3,7 @@ Signature="$CHICAGO$"
 Class=MEDIA
 Provider=%SCR%
 ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
-DriverVer = 02/22/2007, 6.0.6000.1
+DriverVer = 07/19/2026, 0.1.0.0
 CatalogFile=AES67Driver.cat
 PnpLockdown=1
 
@@ -14,18 +14,18 @@ PnpLockdown=1
 AES67Driver.sys=222
 
 [Manufacturer]
-%MfgName%=MicrosoftDS,NTAMD64,NTx86,NTARM,NTARM64
+%MfgName%=AES67DS,NTAMD64,NTx86,NTARM,NTARM64
 
-[MicrosoftDS.NTAMD64]
+[AES67DS.NTAMD64]
 %AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
 
-[MicrosoftDS.NTx86]
+[AES67DS.NTx86]
 %AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
 
-[MicrosoftDS.NTARM]
+[AES67DS.NTARM]
 %AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
 
-[MicrosoftDS.NTARM64]
+[AES67DS.NTARM64]
 %AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
 
 [DestinationDirs]
@@ -80,8 +80,8 @@ ErrorControl=1
 ServiceBinary=%10%\system32\drivers\AES67Driver.sys
 
 [Strings]
-SCR="Tom Kistner"
-MfgName="Tom Kistner"
+SCR="V_AES67 Project"
+MfgName="V_AES67 Project"
 
 AES67Driver.Name="AES67Driver"
 AES67Driver.NameGuid="{946A7B1A-EBBC-422a-A81F-F07C8D40D3B4}"

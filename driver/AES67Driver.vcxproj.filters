@@ -48,9 +48,6 @@
     <ClCompile Include="savedata.cpp">
       <Filter>Driver Files</Filter>
     </ClCompile>
-    <ClCompile Include="ivshmemsavedata.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h">
@@ -74,7 +71,7 @@
     <ClInclude Include="savedata.h">
       <Filter>Driver Files</Filter>
     </ClInclude>
-    <ClInclude Include="scream.h">
+    <ClInclude Include="aes67driver.h">
       <Filter>Driver Files</Filter>
     </ClInclude>
     <ClInclude Include="toptable.h">
@@ -86,15 +83,9 @@
     <ClInclude Include="resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="netiodef.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ivshmemsavedata.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="scream.rc">
+    <ResourceCompile Include="aes67driver.rc">
       <Filter>Driver Files</Filter>
     </ResourceCompile>
   </ItemGroup>

@@ -4,16 +4,9 @@
 #pragma warning(push)
 #pragma warning(disable:4201) // nameless struct/union
 #pragma warning(disable:4214) // bit field types other than int
-
-// fix strange warnings from wsk.h
-#pragma warning(disable:4510)
-#pragma warning(disable:4512)
-#pragma warning(disable:4610)
+#pragma warning(pop)
 
 #include <ntddk.h>
-#include <wsk.h>
-
-#pragma warning(pop)
 
 //-----------------------------------------------------------------------------
 //  Forward declaration
@@ -41,28 +34,26 @@ typedef SAVEWORKER_PARAM *PSAVEWORKER_PARAM;
 
 ///////////////////////////////////////////////////////////////////////////////
 // CSaveData
-//   Saves the wave data to disk.
 //
-IO_WORKITEM_ROUTINE SendDataWorkerCallback;
-
+//   AES67 rework note (P1):
+//   Historically (Scream heritage) this class ran a WSK UDP multicast sender
+//   directly from the kernel. That network path has been removed. The kernel
+//   driver must stay thin: it only accepts PCM frames from the audio stack and
+//   (in a later phase) hands them to user space via IOCTL + shared memory.
+//
+//   For now this is a "dummy sink": it accepts WriteData() calls and drops the
+//   samples. The public interface is intentionally preserved so minstream.cpp /
+//   common.cpp do not need to change when the real hand-off is wired up.
+//
+//   TODO(P9): replace the dummy sink with the ring-buffer -> shared-memory
+//             hand-off that the user-space engine drains via IOCTL.
+//
 class CSaveData {
 protected:
-    WSK_REGISTRATION            m_wskSampleRegistration;
-    PWSK_SOCKET                 m_socket;
-    PIRP                        m_irp;
-    KEVENT                      m_syncEvent;
-    
-    PBYTE                       m_pBuffer;
-    ULONG                       m_ulOffset;
-    ULONG                       m_ulSendOffset;
-    PMDL                        m_pMdl;
-    
     static PDEVICE_OBJECT       m_pDeviceObject;
     static PSAVEWORKER_PARAM    m_pWorkItem;
 
     BOOL                        m_fWriteDisabled;
-    
-    SOCKADDR_STORAGE            m_sServerAddr;
 
     BYTE                        m_bSamplingFreqMarker;
     BYTE                        m_bBitsPerSampleMarker;
@@ -75,21 +66,14 @@ public:
 
     NTSTATUS                    Initialize(DWORD nSamplesPerSec, WORD wBitsPerSample, WORD nChannels, DWORD dwChannelMask);
     void                        Disable(BOOL fDisable);
-    
+
     static void                 DestroyWorkItems(void);
     void                        WaitAllWorkItems(void);
-    
+
     static NTSTATUS             SetDeviceObject(IN PDEVICE_OBJECT DeviceObject);
     static PDEVICE_OBJECT       GetDeviceObject(void);
-    
+
     void                        WriteData(IN PBYTE pBuffer, IN ULONG ulByteCount);
-
-private:
-    static NTSTATUS             InitializeWorkItem(IN PDEVICE_OBJECT DeviceObject);
-
-    void                        CreateSocket(void);
-    void                        SendData();
-    friend VOID                 SendDataWorkerCallback(PDEVICE_OBJECT pDeviceObject, IN PVOID Context);
 };
 typedef CSaveData *PCSaveData;
 

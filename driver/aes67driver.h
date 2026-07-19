@@ -29,8 +29,8 @@ DEFINE_GUIDSTRUCT("49C58C39-D5EB-42C1-ABCD-EB75422ACF38", NAME_AES67_SIMPLE);
 DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_AES67);
 #define PID_AES67 DEFINE_GUIDNAMED(PID_AES67)
 
-// Pool tag used for AES67 allocations
-#define AES67_POOLTAG               'DVSM'
+// Pool tag used for AES67 allocations (shows up as "AS67" in a pool dump)
+#define AES67_POOLTAG               '76SA'
 
 // Debug module name
 #define STR_MODULENAME              "AES67Driver: "
@@ -51,6 +51,12 @@ DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_AES67);
 // ---- IOCTL 自定义控制码 ----
 // CTL_CODE(DeviceType, Function, Method, Access)
 // FILE_DEVICE_UNKNOWN=0x0022, METHOD_NEITHER=3, FILE_ANY_ACCESS=0
+//
+// TODO(P9): 这三个码是"内核↔用户态主动脉"的接口定义，目前 handler 还是空壳
+//   （见 adapter.cpp AES67DeviceControl）。P9 打通时要注意：这里用了
+//   METHOD_NEITHER，但当前 handler 里用 Irp->AssociatedIrp.SystemBuffer 取
+//   数据，那是 METHOD_BUFFERED 的用法——两者不一致，P9 实现时必须统一
+//   (建议 GET_BUFFER/GET_POSITION 改用 METHOD_BUFFERED，简单且安全)。
 #define IOCTL_AES67_GET_BUFFER      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
 #define IOCTL_AES67_SET_FORMAT      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_NEITHER, FILE_ANY_ACCESS)
 #define IOCTL_AES67_GET_POSITION    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_NEITHER, FILE_ANY_ACCESS)
@@ -142,13 +148,10 @@ extern NTSTATUS PropertyHandler_Wave(IN PPCPROPERTY_REQUEST PropertyRequest);
 // Handles the GeneralComponentId request.
 extern NTSTATUS PropertyHandler_WaveFilter(IN PPCPROPERTY_REQUEST PropertyRequest);
 
-extern PCHAR g_UnicastIPv4;
-extern DWORD g_UnicastPort;
-extern UINT8 g_UseIVSHMEM;
-extern PCHAR g_UnicastSrcIPv4;
-extern DWORD g_UnicastSrcPort;
-extern DWORD g_DSCP;
-extern DWORD g_TTL;
+// NOTE (P1): the network-related globals (unicast/multicast address & port,
+// source address, DSCP, TTL, UseIVSHMEM) drove the removed kernel WSK sender
+// and are gone. Only the format/behaviour knobs the thin driver still needs
+// remain.
 extern DWORD g_AES67DriverVersion;
 extern DWORD g_silenceThreshold;
 
