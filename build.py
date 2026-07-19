@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """AES67 项目统一构建脚本 — 从 Git Bash 直接调，不依赖用户双击"""
-import subprocess, sys, os
+import subprocess, sys, os, re, datetime
 # 强制终端输出 UTF-8，避免 GBK 乱码
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -50,18 +50,44 @@ def build_driver():
         f'msbuild {DRIVER_PROJ} /p:Configuration=Win10 /p:Platform=x64 /t:Build'
     ])
 
+def _fix_driverver_utc():
+    """把输出目录 INF 的 DriverVer 日期强制改成 UTC 安全日期(UTC 前一天).
+
+    背景: msbuild 的 StampInf 任务会把输出 INF 的 DriverVer 日期改成编译当天
+    的本地日期. 跨时区时(如北京已 7/20 凌晨但 UTC 仍 7/19), 会打成 07/20/2026,
+    随后 inf2cat 按 UTC 判定该日期"在未来"而拒绝生成 .cat.
+    这里直接把输出 INF 的 DriverVer 日期覆盖成 UTC 前一天, 任何时区/任何时刻
+    编译都不会超前于当前 UTC, 纯字符串替换不依赖 WDK 内部机制, 绝对可控.
+    """
+    inf_path = f'{DRIVER_OUT}\\AES67Driver.inf'
+    if not os.path.exists(inf_path):
+        print(f"  WARN: 输出 INF 不存在, 跳过 DriverVer 修正: {inf_path}")
+        return
+    safe = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=1)
+    safe_str = safe.strftime('%m/%d/%Y')  # inf2cat 要求 MM/DD/YYYY
+    with open(inf_path, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+    # DriverVer = MM/DD/YYYY, x.x.x.x  ->  仅替换日期部分, 版本号保留
+    new_text, n = re.subn(
+        r'(DriverVer\s*=\s*)\d{2}/\d{2}/\d{4}',
+        lambda m: m.group(1) + safe_str,
+        text, count=1)
+    if n:
+        with open(inf_path, 'w', encoding='utf-8') as f:
+            f.write(new_text)
+        print(f"  DriverVer 日期已修正为 UTC 安全日期 {safe_str} (输出 INF)")
+    else:
+        print("  WARN: 未在输出 INF 中找到 DriverVer 行, 未修改")
+
 def sign_driver():
     inf2cat = f'{WDK_BIN}\\x86\\inf2cat.exe'
     signtool = f'{WDK_BIN}\\x64\\signtool.exe'
+    # 先把输出 INF 的 DriverVer 日期改成 UTC 安全日期, 再跑 inf2cat
+    _fix_driverver_utc()
     run_cmd("Signing Driver INF", [
         f'cd /d "{DRIVER_OUT}"',
         f'"{inf2cat}" /driver:. /os:10_19H1_X64',
         f'"{signtool}" sign /fd SHA256 /a aes67driver.cat'
-    ])
-
-def install_driver():
-    run_cmd("Installing Driver", [
-        f'pnputil /add-driver {DRIVER_OUT}\\AES67Driver.inf /install'
     ])
 
 def build_ioctl_test():
@@ -83,18 +109,53 @@ def run_ioctl_test():
         print((r.stderr or b'').decode('gbk', errors='replace'))
     print(f"RC: {r.returncode}")
 
+def _uninstall_all_aes67_oem_packages():
+    """动态枚举并删除所有匹配 AES67Driver 的 oem*.inf 驱动包。
+
+    之前硬编码 oem175/oem176 是错的——每台机器、每次安装的 oem 编号都不同,
+    硬编码几乎必然删不掉真正的旧包, 导致 /add-driver 只是叠加安装, 旧的
+    KS interface 类注册残留, 改了 INF 的 AddInterface 也不生效(端点状态不变)。
+    这里用 pnputil /enum-drivers 找出所有 OriginalName=AES67Driver.inf 的包,
+    逐个 /delete-driver /force, 保证下一次 /install 是干净的全新注册。
+    """
+    try:
+        r = subprocess.run('pnputil /enum-drivers', shell=True,
+                            capture_output=True, timeout=30)
+        out = (r.stdout or b'').decode('gbk', errors='replace')
+    except Exception as e:
+        print(f"enum-drivers failed: {e}")
+        return
+    # 解析出 "Published Name: oemNN.inf" 且其 Original Name 为 AES67Driver.inf 的条目
+    oem = None
+    targets = []
+    for line in out.splitlines():
+        s = line.strip()
+        low = s.lower()
+        if low.startswith('published name') or low.startswith('发布名称'):
+            oem = s.split(':', 1)[1].strip() if ':' in s else None
+        elif (low.startswith('original name') or low.startswith('原始名称')) and oem:
+            if 'aes67driver.inf' in low:
+                targets.append(oem)
+            oem = None
+    if not targets:
+        print("No existing AES67Driver oem package found (clean).")
+        return
+    print(f"Found existing AES67 driver packages: {targets}")
+    for pkg in targets:
+        run_cmd(f"Deleting old package {pkg}", [
+            f'pnputil /delete-driver {pkg} /uninstall /force'
+        ])
+
 def install_driver():
-    # 先卸载旧驱动
-    run_cmd("Removing old driver", [
+    # 1. 先移除设备节点
+    run_cmd("Removing old device node", [
         'devcon remove *AES67Driver 2>nul',
+        'pnputil /remove-device /deviceid *AES67Driver 2>nul',
         'ping -n 3 127.0.0.1 >nul'
     ])
-    # 强制删除已安装的驱动包
-    run_cmd("Force uninstalling driver package", [
-        'pnputil /delete-driver oem175.inf /force 2>nul',
-        'pnputil /delete-driver oem176.inf /force 2>nul',
-        'ping -n 2 127.0.0.1 >nul'
-    ])
+    # 2. 动态删除所有旧的 AES67 驱动包(修复硬编码 oem175/176 的老 bug)
+    _uninstall_all_aes67_oem_packages()
+    # 3. 全新安装(此时 INF 的 KS interface 注册会重建)
     run_cmd("Installing new driver", [
         f'pnputil /add-driver {DRIVER_OUT}\\AES67Driver.inf /install'
     ])

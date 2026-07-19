@@ -55,10 +55,27 @@ private:
 };
 
 // ---- Find device by substring match in friendly name ----
+// stateMask defaults to ACTIVE|UNPLUGGED: a virtual soundcard endpoint (no
+// physical jack) is frequently reported as UNPLUGGED/NOTPRESENT rather than
+// ACTIVE, so restricting to DEVICE_STATE_ACTIVE alone silently misses it.
 ComPtr<IMMDevice> FindAudioDevice(
     IMMDeviceEnumerator* enumerator,
     EDataFlow flow,
-    const wchar_t* nameSubstring);
+    const wchar_t* nameSubstring,
+    DWORD stateMask = DEVICE_STATE_ACTIVE | DEVICE_STATE_UNPLUGGED | DEVICE_STATE_NOTPRESENT);
+
+// ---- Diagnostic: log every ACTIVE render endpoint's friendly name ----
+// Used when the AES67Driver endpoint cannot be found, so the user can see what
+// endpoints actually exist / how the driver endpoint is named / whether it is
+// enabled (a disabled endpoint won't appear in DEVICE_STATE_ACTIVE at all).
+void LogRenderEndpoints(IMMDeviceEnumerator* enumerator);
+
+// ---- Convert a UTF-16 device/path string to a log-safe narrow string ----
+// The Logger uses the narrow CRT (vsnprintf); %ls truncates on the first
+// non-ASCII char under the default C locale. Use this + %s for any wide string
+// that may contain localized text (e.g. Chinese device names).
+#include <string>
+std::string WideToNarrow(const wchar_t* w);
 
 // ---- Core WASAPI client wrapper ----
 class WasapiClient {

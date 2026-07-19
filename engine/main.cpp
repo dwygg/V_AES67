@@ -25,7 +25,7 @@ struct CmdLineArgs {
 
 static void PrintUsage() {
     puts("");
-    puts("AES67 Audio Engine — M4 Loopback Capture");
+    puts("AES67 Audio Engine - M4 Loopback Capture");
     puts("");
     puts("Usage: aes67_engine.exe [options]");
     puts("");
@@ -36,6 +36,8 @@ static void PrintUsage() {
     puts("  -d, --duration N     Run duration in seconds, 0 = indefinite (default 10)");
     puts("  -p, --period N       Buffer period in microseconds (default 100000 = 10ms)");
     puts("  -l, --log FILE       Log file path");
+    puts("      --no-autostart   Panel-hosted mode: init + listen, wait for panel START");
+    puts("      --managed        Alias of --no-autostart");
     puts("  -h, --help           Show this help");
     puts("");
     puts("Network (AES67 Transmit):");
@@ -51,6 +53,7 @@ static void PrintUsage() {
     puts("Examples:");
     puts("  aes67_engine.exe --duration 30");
     puts("  aes67_engine.exe --rx --duration 30           (full duplex: TX+RX loopback)");
+    puts("  aes67_engine.exe --duration 0 --no-autostart  (panel-hosted: wait for panel START)");
     puts("");
 }
 
@@ -112,6 +115,10 @@ static CmdLineArgs ParseArgs(int argc, wchar_t* argv[]) {
         }
         else if (wcscmp(arg, L"--no-tx") == 0) {
             args.netConfig.enableTx = false;
+        }
+        else if (wcscmp(arg, L"--no-autostart") == 0 || wcscmp(arg, L"--managed") == 0) {
+            // Panel-hosted mode: don't auto-start audio; wait for panel START.
+            args.config.autoStart = false;
         }
         else if (wcscmp(arg, L"--rx") == 0) {
             args.netConfig.enableRx = true;
@@ -178,14 +185,14 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     // Log configuration
-    Logger::Instance().Info("AES67 Audio Engine M4 — Loopback Capture");
+    Logger::Instance().Info("AES67 Audio Engine M4 - Loopback Capture");
     Logger::Instance().Info("  Channels:    %u", args.config.channels);
     Logger::Instance().Info("  Sample rate: %u Hz", args.config.sampleRate);
     Logger::Instance().Info("  Bit depth:   %u-bit", args.config.bitsPerSample);
     Logger::Instance().Info("  Duration:    %u s (0=indefinite)", args.config.durationSec);
     Logger::Instance().Info("  Period:      %u us", args.config.periodUs);
     if (args.logFile) {
-        Logger::Instance().Info("  Log file:    %ls", args.logFile);
+        Logger::Instance().Info("  Log file:    %s", WideToNarrow(args.logFile).c_str());
     }
     if (args.netConfig.enableTx) {
         Logger::Instance().Info("  TX dest:     %s:%u", args.netConfig.destAddr.c_str(), args.netConfig.destPort);

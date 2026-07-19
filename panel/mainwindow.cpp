@@ -141,7 +141,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::refreshStatus() {
     std::string resp = m_pipe.SendCommand("STATUS");
-    if (resp.empty()) {
+    if (resp.empty() || resp.rfind("ERR", 0) == 0) {
         m_engineState->setText("● Disconnected");
         m_engineState->setStyleSheet("font-size: 16px; font-weight: bold; color: #c00;");
         m_btnStartStop->setText("Start");
@@ -150,11 +150,18 @@ void MainWindow::refreshStatus() {
         m_rxPkts->setText("--");
         m_jbDepth->setText("--");
         m_ptpState->setText("--");
-        statusBar()->showMessage("Cannot connect to engine");
+        // Surface the concrete failure reason (e.g. "ERR connect: 5 ...") instead
+        // of a generic message — this is exactly the diagnostic we need to see.
+        statusBar()->showMessage(resp.empty()
+            ? "Cannot connect to engine"
+            : QString::fromStdString(resp));
         return;
     }
 
-    statusBar()->showMessage("Connected");
+    // "Engine connected" refers to the pipe/process link, independent of whether
+    // audio is streaming. After STOP the engine process (and pipe) stay alive so
+    // you can START again — so Connected + Stopped is the expected combination.
+    statusBar()->showMessage("Engine connected");
     auto s = PipeClient::ParseStatus(resp);
     updateDisplay(s);
 }
@@ -196,19 +203,29 @@ void MainWindow::updateDisplay(const std::map<std::string, std::string>& s) {
 }
 
 void MainWindow::onStartStop() {
-    std::string resp = m_pipe.SendCommand("STATUS");
-    if (resp.empty()) return;
-    auto s = PipeClient::ParseStatus(resp);
-    if (s["state"] == "running") {
-        m_pipe.SendCommand("STOP");
-    } else {
-        m_pipe.SendCommand("START");
+    // P2 fix: decide from the button's current label (kept in sync every second
+    // by updateDisplay) instead of doing an extra STATUS round-trip here. The
+    // old code sent STATUS first and returned silently if that reply was empty
+    // (e.g. hit the brief window between pipe-instance accepts), so the click
+    // "did nothing". Sending START/STOP directly avoids that failure mode.
+    const bool running = (m_btnStartStop->text() == "Stop");
+    std::string resp = m_pipe.SendCommand(running ? "STOP" : "START");
+    if (resp.empty() || resp.rfind("ERR", 0) == 0) {
+        statusBar()->showMessage(
+            QString("Command failed: %1").arg(QString::fromStdString(resp)), 3000);
+        return;
     }
+    // Reflect the new state immediately, then let the timer keep it in sync.
+    refreshStatus();
 }
 
 void MainWindow::onApplySettings() {
     m_pipe.SendCommand("SET dest " + m_destAddr->text().toStdString());
     m_pipe.SendCommand("SET port " + m_destPort->text().toStdString());
     m_pipe.SendCommand("SET source " + m_sourceAddr->text().toStdString());
+    // M9-4 (P2): RX Port was collected in the UI (m_sourcePort) but never sent,
+    // so the receiver port could not be changed from the panel. Send it now
+    // (engine parses "SET sourceport <n>").
+    m_pipe.SendCommand("SET sourceport " + m_sourcePort->text().toStdString());
     statusBar()->showMessage("Settings applied", 2000);
 }

@@ -131,6 +131,20 @@ static PCPROPERTY_ITEM PropertiesWaveFilter[] = {
 DEFINE_PCAUTOMATION_TABLE_PROP(AutomationWaveFilter, PropertiesWaveFilter);
 
 //=============================================================================
+// FIX (P2): The wave filter MUST advertise its KS categories explicitly.
+// Leaving Categories = NULL does NOT make PortCls "use defaults" (that old
+// comment was wrong) — audiodg builds an MMDevice endpoint from the KS filter
+// based on the filter's category list. Without KSCATEGORY_RENDER the filter
+// is never surfaced as a render endpoint, so IMMDeviceEnumerator::
+// EnumAudioEndpoints(eRender) returns nothing for AES67Driver even though the
+// PnP device node (ROOT\MEDIA\0000) exists. This is exactly why the engine's
+// FindAudioDevice found 0 AES67 endpoints. Advertise AUDIO + RENDER.
+static GUID MiniportFilterCategories[] = {
+  STATICGUIDOF(KSCATEGORY_AUDIO),
+  STATICGUIDOF(KSCATEGORY_RENDER)
+};
+
+//=============================================================================
 static PCFILTER_DESCRIPTOR MiniportFilterDescriptor = {
   0,                                  // Version
   &AutomationWaveFilter,              // AutomationTable
@@ -142,8 +156,8 @@ static PCFILTER_DESCRIPTOR MiniportFilterDescriptor = {
   MiniportNodes,                      // Nodes
   SIZEOF_ARRAY(MiniportConnections),  // ConnectionCount
   MiniportConnections,                // Connections
-  0,                                  // CategoryCount
-  NULL                                // Categories  - use defaults (audio, render, capture)
+  SIZEOF_ARRAY(MiniportFilterCategories),  // CategoryCount
+  MiniportFilterCategories            // Categories: AUDIO + RENDER
 };
 
 #endif

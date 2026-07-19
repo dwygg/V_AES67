@@ -2,14 +2,32 @@
 #include "logger.h"
 #include <initguid.h>
 
+// Convert a UTF-16 (wchar_t) string to a console/log-safe narrow string.
+// The Logger uses vsnprintf (narrow CRT); passing %ls through it relies on the
+// C locale and silently truncates on the first non-ASCII char (e.g. Chinese
+// endpoint names like "扬声器"), which is why endpoint lines printed blank.
+// We convert explicitly with WideCharToMultiByte using the console output code
+// page so localized device names render correctly.
+std::string WideToNarrow(const wchar_t* w) {
+    if (!w || !*w) return std::string();
+    UINT cp = GetConsoleOutputCP();
+    if (cp == 0) cp = CP_UTF8;
+    int len = WideCharToMultiByte(cp, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return std::string();
+    std::string out((size_t)len - 1, '\0');
+    WideCharToMultiByte(cp, 0, w, -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
+
 // ---- FindAudioDevice ----
 ComPtr<IMMDevice> FindAudioDevice(
     IMMDeviceEnumerator* enumerator,
     EDataFlow flow,
-    const wchar_t* nameSubstring)
+    const wchar_t* nameSubstring,
+    DWORD stateMask)
 {
     IMMDeviceCollection* coll = nullptr;
-    if (FAILED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &coll)))
+    if (FAILED(enumerator->EnumAudioEndpoints(flow, stateMask, &coll)))
         return ComPtr<IMMDevice>();
 
     UINT count = 0;
@@ -26,7 +44,20 @@ ComPtr<IMMDevice> FindAudioDevice(
             PropVariantInit(&var);
             if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var))) {
                 if (var.pwszVal && wcsstr(var.pwszVal, nameSubstring)) {
-                    Logger::Instance().Info("Found device: %ls", var.pwszVal);
+                    DWORD state = 0;
+                    dev->GetState(&state);
+                    const char* stateStr =
+                        (state == DEVICE_STATE_ACTIVE)     ? "ACTIVE" :
+                        (state == DEVICE_STATE_DISABLED)   ? "DISABLED" :
+                        (state == DEVICE_STATE_NOTPRESENT) ? "NOTPRESENT" :
+                        (state == DEVICE_STATE_UNPLUGGED)  ? "UNPLUGGED" : "?";
+                    Logger::Instance().Info("Found device: %s [state=%s]",
+                        WideToNarrow(var.pwszVal).c_str(), stateStr);
+                    if (state != DEVICE_STATE_ACTIVE) {
+                        Logger::Instance().Warn(
+                            "  endpoint not ACTIVE (%s) - virtual soundcard w/o jack; "
+                            "attempting to use it anyway.", stateStr);
+                    }
                     PropVariantClear(&var);
                     props->Release();
                     result.Reset(dev);
@@ -40,6 +71,52 @@ ComPtr<IMMDevice> FindAudioDevice(
     }
     coll->Release();
     return result;
+}
+
+// ---- Diagnostic: enumerate ALL render endpoints (any state) ----
+void LogRenderEndpoints(IMMDeviceEnumerator* enumerator) {
+    if (!enumerator) return;
+    // DEVICE_STATEMASK_ALL = ACTIVE|DISABLED|NOTPRESENT|UNPLUGGED, so a driver
+    // endpoint that exists but is disabled/unplugged still shows up here.
+    IMMDeviceCollection* coll = nullptr;
+    if (FAILED(enumerator->EnumAudioEndpoints(
+            eRender, DEVICE_STATEMASK_ALL, &coll)) || !coll) {
+        Logger::Instance().Error("  (failed to enumerate render endpoints)");
+        return;
+    }
+    UINT count = 0;
+    coll->GetCount(&count);
+    if (count == 0) {
+        Logger::Instance().Error("  (no render endpoints present at all)");
+    }
+    for (UINT i = 0; i < count; i++) {
+        IMMDevice* dev = nullptr;
+        if (FAILED(coll->Item(i, &dev))) continue;
+
+        DWORD state = 0;
+        dev->GetState(&state);
+        const char* stateStr =
+            (state == DEVICE_STATE_ACTIVE)     ? "ACTIVE" :
+            (state == DEVICE_STATE_DISABLED)   ? "DISABLED" :
+            (state == DEVICE_STATE_NOTPRESENT) ? "NOTPRESENT" :
+            (state == DEVICE_STATE_UNPLUGGED)  ? "UNPLUGGED" : "?";
+
+        IPropertyStore* props = nullptr;
+        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
+            PROPVARIANT var;
+            PropVariantInit(&var);
+            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var)) && var.pwszVal) {
+                Logger::Instance().Info("  [render %u] %-10s %s", i, stateStr,
+                                        WideToNarrow(var.pwszVal).c_str());
+            } else {
+                Logger::Instance().Info("  [render %u] %-10s (no name)", i, stateStr);
+            }
+            PropVariantClear(&var);
+            props->Release();
+        }
+        dev->Release();
+    }
+    coll->Release();
 }
 
 // ---- WasapiClient ----
