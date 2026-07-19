@@ -78,6 +78,12 @@ public:
                      const NetworkConfig& netConfig = NetworkConfig());
     void SignalStop() { m_stopRequested.store(true, std::memory_order_release); }
 
+    // M9-1 (P2): STOP arriving on the pipe thread must NOT call Stop() directly,
+    // because Stop() joins the pipe thread (WaitForSingleObject on m_thread) ->
+    // the pipe thread would wait for itself -> 3s deadlock. Instead the handler
+    // sets this flag and the engine's own thread (RunBlocking loop) performs Stop().
+    void SignalStopAudio() { m_stopAudioRequested.store(true, std::memory_order_release); }
+
 private:
     EngineState              m_state = EngineState::Uninitialized;
     AudioConfig              m_config;
@@ -90,7 +96,14 @@ private:
     WasapiClient             m_clientRx;          // RX: render client
     AudioThread              m_thread;
     AudioThreadStats         m_stats;
-    std::atomic<bool>        m_stopRequested = false;
+    std::atomic<bool>        m_stopRequested = false;        // EXIT: tear down process (leave RunBlocking loop)
+    std::atomic<bool>        m_stopAudioRequested = false;   // M9-1: STOP audio, keep process+pipe alive
+    std::atomic<bool>        m_reconfigRequested = false;    // M9-3: SET changed net config -> rebuild sockets on engine thread
+
+    // M9-3 (P2): rebuild network TX/RX sockets to apply new dest/source addr+port
+    // while running. MUST run on the engine thread (RunBlocking loop), never on the
+    // pipe thread, because it stops/starts network threads.
+    void ApplyNetworkReconfig();
 
     // M5 transmit
     RingBuffer     m_ringBuffer{kRingBufferCapacity};

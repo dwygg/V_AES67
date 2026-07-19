@@ -115,22 +115,49 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
                 m_ptpClock.GetOffsetNs());
             return buf;
         }
+        // NOTE: this handler runs on the pipe thread.
+        // START/PAUSE/RESUME don't join the pipe thread, so they're safe to call here.
+        // STOP is special: Stop() used to join the pipe thread -> self-deadlock (M9-1).
+        // We now defer STOP to the engine's own loop via an atomic flag.
         if (cmd == "START") { Start(); return "OK"; }
-        if (cmd == "STOP")  { Stop();  return "OK"; }
+        if (cmd == "STOP")  { SignalStopAudio(); return "OK"; }
         if (cmd == "PAUSE") { Pause(); return "OK"; }
         if (cmd == "RESUME"){ Resume();return "OK"; }
+        // M9-3/M9-4 (P2): SET updates m_netConfig, then flags a reconfig so the
+        // engine thread rebuilds the sockets (changing the value alone never
+        // re-bound the socket -> address changes silently didn't take effect).
+        // Supported keys: dest / port (TX dest addr+port),
+        //                 source / sourceport (RX source addr+port).
         if (cmd == "SET" && arg.find("dest ") == 0) {
-            m_netConfig.destAddr = arg.substr(5); return "OK";
+            m_netConfig.destAddr = arg.substr(5);
+            m_reconfigRequested.store(true, std::memory_order_release);
+            return m_state == EngineState::Running ? "OK reconfiguring" : "OK";
+        }
+        if (cmd == "SET" && arg.find("sourceport ") == 0) {
+            m_netConfig.sourcePort = (uint16_t)atoi(arg.substr(11).c_str());
+            m_reconfigRequested.store(true, std::memory_order_release);
+            return m_state == EngineState::Running ? "OK reconfiguring" : "OK";
         }
         if (cmd == "SET" && arg.find("source ") == 0) {
-            m_netConfig.sourceAddr = arg.substr(7); return "OK";
+            m_netConfig.sourceAddr = arg.substr(7);
+            m_reconfigRequested.store(true, std::memory_order_release);
+            return m_state == EngineState::Running ? "OK reconfiguring" : "OK";
         }
         if (cmd == "SET" && arg.find("port ") == 0) {
-            m_netConfig.destPort = (uint16_t)atoi(arg.substr(5).c_str()); return "OK";
+            m_netConfig.destPort = (uint16_t)atoi(arg.substr(5).c_str());
+            m_reconfigRequested.store(true, std::memory_order_release);
+            return m_state == EngineState::Running ? "OK reconfiguring" : "OK";
         }
         if (cmd == "EXIT") { SignalStop(); return "OK"; }
         return "ERR unknown command";
     });
+
+    // M9-2 (P2): pipe listens as soon as the engine is initialized, BEFORE audio
+    // Start(). "Engine process alive == pipe listening" — so the panel can connect
+    // and query STATUS / remotely START even when audio hasn't started yet.
+    // Pipe is torn down only in Shutdown() (not in Stop()), avoiding the previous
+    // egg-and-chicken problem (pipe bound to audio Start).
+    m_pipeServer.Start();
 
     m_state = EngineState::Initialized;
     Logger::Instance().Info("Engine initialized: %u Hz, %u-bit, %u ch [%s%s]",
@@ -154,8 +181,8 @@ bool Aes67Engine::Start() {
         return false;
     }
 
-    // M9: Start IPC pipe server
-    m_pipeServer.Start();
+    // M9-2 (P2): pipe server is started in Initialize() and stopped in Shutdown(),
+    // decoupled from audio Start/Stop. Do NOT start/stop it here.
 
     // M7: Start PTP clock synchronization
     if (m_netConfig.enablePtp) {
@@ -219,8 +246,12 @@ bool Aes67Engine::Start() {
 
 void Aes67Engine::Stop() {
     if (m_state != EngineState::Running && m_state != EngineState::Paused) return;
+    // M9-1/M9-2 (P2): DO NOT stop the pipe server here.
+    //  - Stop() may be called from the pipe thread (via the deferred STOP flag);
+    //    m_pipeServer.Stop() joins that very thread -> self-deadlock.
+    //  - Even off the pipe thread, we want the pipe to stay alive after STOP so the
+    //    panel can re-START. Pipe is torn down only in Shutdown().
     // Reverse dependency order
-    m_pipeServer.Stop();
     m_ptpThread.Stop();
     m_sapAnnouncer.Stop();
     m_networkThread.Stop();
@@ -231,6 +262,42 @@ void Aes67Engine::Stop() {
     m_jitterBuffer.Reset();
     m_state = EngineState::Stopped;
     Logger::Instance().Info("Engine stopped");
+}
+
+// M9-3 (P2): apply new dest/source addr+port by rebuilding the network threads.
+// Runs on the engine thread only (called from RunBlocking loop). Changing
+// m_netConfig values alone never re-bound the UDP sockets, so address changes
+// used to silently not take effect; here we actually stop and restart the
+// affected network threads with the current config.
+void Aes67Engine::ApplyNetworkReconfig() {
+    if (m_state != EngineState::Running) return;  // only meaningful while streaming
+
+    if (m_netConfig.enableTx) {
+        m_sapAnnouncer.Stop();
+        m_networkThread.Stop();
+        if (!m_networkThread.Start(&m_ringBuffer, m_config,
+                                   m_netConfig.destAddr.c_str(),
+                                   m_netConfig.destPort)) {
+            Logger::Instance().Error("Reconfig: TX network restart failed");
+        } else if (!m_sapAnnouncer.Start(m_networkThread.GetSSRC(),
+                                         m_netConfig.destPort, m_config)) {
+            Logger::Instance().Warn("Reconfig: SAP announcer restart failed");
+        }
+        Logger::Instance().Info("Reconfig: TX now -> %s:%u",
+            m_netConfig.destAddr.c_str(), m_netConfig.destPort);
+    }
+
+    if (m_netConfig.enableRx) {
+        m_networkReceiver.Stop();
+        m_jitterBuffer.Reset();
+        if (!m_networkReceiver.Start(&m_jitterBuffer,
+                                     m_netConfig.sourceAddr.c_str(),
+                                     m_netConfig.sourcePort)) {
+            Logger::Instance().Error("Reconfig: RX receiver restart failed");
+        }
+        Logger::Instance().Info("Reconfig: RX now <- %s:%u",
+            m_netConfig.sourceAddr.c_str(), m_netConfig.sourcePort);
+    }
 }
 
 void Aes67Engine::Pause() {
@@ -252,6 +319,9 @@ void Aes67Engine::Shutdown() {
     if (m_state == EngineState::Running || m_state == EngineState::Paused) {
         Stop();
     }
+    // M9-2 (P2): pipe server is torn down here (not in Stop()). Safe: Shutdown() is
+    // called from the engine/main thread, never from the pipe thread.
+    m_pipeServer.Stop();
     // WasapiClient dtor calls Stop/Reset
     // ComPtr dtor releases interfaces
     // ComInitializer dtor calls CoUninitialize
@@ -282,18 +352,39 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         config.durationSec,
         netConfig.enableTx ? netConfig.destAddr.c_str() : "capture only");
 
-    while (m_state == EngineState::Running) {
+    // M9 (P2): loop while the engine process is alive (until EXIT / Ctrl+C).
+    // Audio STOP no longer ends the process — it just stops streaming; the pipe
+    // keeps listening so the panel can re-START. Loop condition is the process
+    // lifetime flag, not the audio Running state.
+    while (!m_stopRequested.load(std::memory_order_acquire)) {
         Sleep(kEngineStatusIntervalMs);
 
         if (m_stopRequested.load(std::memory_order_acquire)) {
-            Logger::Instance().Info("Stop requested");
+            Logger::Instance().Info("Exit requested");
             break;
+        }
+
+        // M9-1 (P2): deferred STOP from the pipe thread — executed here on the
+        // engine thread, so Stop() (which joins nothing on this thread) is safe.
+        if (m_stopAudioRequested.exchange(false, std::memory_order_acq_rel)) {
+            Logger::Instance().Info("Audio stop requested (pipe) — stopping stream, keeping process/pipe alive");
+            Stop();
+        }
+
+        // M9-3 (P2): apply SET address/port changes by rebuilding sockets here.
+        if (m_reconfigRequested.exchange(false, std::memory_order_acq_rel)) {
+            ApplyNetworkReconfig();
+        }
+
+        // While stopped/paused, just idle and keep serving the pipe.
+        if (m_state != EngineState::Running) {
+            continue;
         }
 
         DWORD now = GetTickCount();
         DWORD elapsed = (now > tickStart) ? (now - tickStart) / 1000 : 0;
 
-        // Check duration
+        // Check duration (only meaningful while actively running)
         if (config.durationSec > 0 && elapsed >= config.durationSec) {
             Logger::Instance().Info("Duration reached (%us)", config.durationSec);
             break;

@@ -210,5 +210,9 @@ void MainWindow::onApplySettings() {
     m_pipe.SendCommand("SET dest " + m_destAddr->text().toStdString());
     m_pipe.SendCommand("SET port " + m_destPort->text().toStdString());
     m_pipe.SendCommand("SET source " + m_sourceAddr->text().toStdString());
+    // M9-4 (P2): RX Port was collected in the UI (m_sourcePort) but never sent,
+    // so the receiver port could not be changed from the panel. Send it now
+    // (engine parses "SET sourceport <n>").
+    m_pipe.SendCommand("SET sourceport " + m_sourcePort->text().toStdString());
     statusBar()->showMessage("Settings applied", 2000);
 }
