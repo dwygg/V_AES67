@@ -243,13 +243,13 @@ extern "C" NTSTATUS DriverEntry(
 
     GetRegistrySettings(RegistryPathName);
 
-    // 保存 PortCls 的 DeviceControl，插入自定义 IOCTL handler
-    g_PortClsDeviceControl = DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL];
-    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = AES67DeviceControl;
-
     ntStatus = PcInitializeAdapterDriver(DriverObject, RegistryPathName, (PDRIVER_ADD_DEVICE)AddDevice);
 
-    // PortCls 可能覆盖，重新设置
+    // FIX (P2): 在 PcInitializeAdapterDriver 之后保存 PortCls handler.
+    // 之前在 PcInitializeAdapterDriver 之前保存 → g_PortClsDeviceControl
+    // 拿到的是空默认 handler → audiodg 发送的 IOCTL 被转错 → KS filter
+    // 属性查询失败 → MMDevice 端点不创建 → 系统声音设置里没有虚拟声卡.
+    g_PortClsDeviceControl = DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL];
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = AES67DeviceControl;
 
     return ntStatus;
