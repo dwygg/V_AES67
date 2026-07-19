@@ -1,0 +1,102 @@
+[Version]
+Signature="$CHICAGO$"
+Class=MEDIA
+Provider=%SCR%
+ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
+DriverVer = 02/22/2007, 6.0.6000.1
+CatalogFile=AES67Driver.cat
+PnpLockdown=1
+
+[SourceDisksNames]
+222="AES67Driver Driver Disk","",222
+
+[SourceDisksFiles]
+AES67Driver.sys=222
+
+[Manufacturer]
+%MfgName%=MicrosoftDS,NTAMD64,NTx86,NTARM,NTARM64
+
+[MicrosoftDS.NTAMD64]
+%AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
+
+[MicrosoftDS.NTx86]
+%AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
+
+[MicrosoftDS.NTARM]
+%AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
+
+[MicrosoftDS.NTARM64]
+%AES67Driver.DeviceDesc%=AES67Driver,*AES67Driver
+
+[DestinationDirs]
+AES67Driver.CopyList=12  ; %SystemRoot%\System32\drivers
+
+[AES67Driver.CopyList]
+AES67Driver.sys
+
+[AES67Driver.AddReg]
+HKR,,AssociatedFilters,,"wdmaud,redbook"
+HKR,,Driver,,AES67Driver.sys
+HKR,Drivers,SubClasses,,"wave,mixer"
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\wave\wdmaud.drv,Description,,%AES67Driver.DeviceDesc%
+HKR,Drivers\mixer\wdmaud.drv,Description,,%AES67Driver.DeviceDesc%
+HKLM,%MediaCategories%\%AES67Driver.NameGuid%,Name,,%AES67Driver.Name%
+
+[AES67Driver.I.Wave]
+AddReg=AES67Driver.I.Wave.AddReg
+
+[AES67Driver.I.Wave.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%AES67Driver.Wave.szPname%
+
+[AES67Driver.I.Topo]
+AddReg=AES67Driver.I.Topo.AddReg
+
+[AES67Driver.I.Topo.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%AES67Driver.Topo.szPname%
+
+[AES67Driver.NT]
+Include=ks.inf,wdmaudio.inf
+Needs=KS.Registration, WDMAUDIO.Registration
+CopyFiles=AES67Driver.CopyList
+AddReg=AES67Driver.AddReg
+
+[AES67Driver.NT.Interfaces]
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_Wave%,AES67Driver.I.Wave
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_Wave%,AES67Driver.I.Wave
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_Topology%,AES67Driver.I.Topo
+
+[AES67Driver.NT.Services]
+AddService=AES67Driver,0x00000002,AES67Driver_Service_Inst
+
+[AES67Driver_Service_Inst]
+DisplayName=%AES67Driver.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%10%\system32\drivers\AES67Driver.sys
+
+[Strings]
+SCR="Tom Kistner"
+MfgName="Tom Kistner"
+
+AES67Driver.Name="AES67Driver"
+AES67Driver.NameGuid="{946A7B1A-EBBC-422a-A81F-F07C8D40D3B4}"
+AES67Driver.DeviceDesc="AES67Driver (WDM)"
+AES67Driver.SvcDesc="AES67Driver (WDM)"
+
+AES67Driver.Wave.szPname="AES67Driver Wave"
+AES67Driver.Topo.szPname="AES67Driver Topology"
+
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+
+KSNAME_Wave="Wave"
+KSNAME_Topology="Topology"
+
+MediaCategories="SYSTEM\CurrentControlSet\Control\MediaCategories"
