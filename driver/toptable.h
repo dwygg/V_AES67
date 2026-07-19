@@ -194,15 +194,6 @@ static PCPROPERTY_ITEM PropertiesTopoFilter[] = {
 DEFINE_PCAUTOMATION_TABLE_PROP(AutomationTopoFilter, PropertiesTopoFilter);
 
 //=============================================================================
-// FIX (P2): topology filter must also advertise its categories so audiodg
-// associates it with the render endpoint (AUDIO + RENDER + TOPOLOGY).
-static GUID MiniportFilterCategories[] = {
-  STATICGUIDOF(KSCATEGORY_AUDIO),
-  STATICGUIDOF(KSCATEGORY_RENDER),
-  STATICGUIDOF(KSCATEGORY_TOPOLOGY)
-};
-
-//=============================================================================
 static PCFILTER_DESCRIPTOR MiniportFilterDescriptor = {
   0,                                  // Version
   &AutomationTopoFilter,              // AutomationTable
@@ -214,8 +205,8 @@ static PCFILTER_DESCRIPTOR MiniportFilterDescriptor = {
   TopologyNodes,                      // Nodes
   SIZEOF_ARRAY(MiniportConnections),  // ConnectionCount
   MiniportConnections,                // Connections
-  SIZEOF_ARRAY(MiniportFilterCategories),  // CategoryCount
-  MiniportFilterCategories            // Categories: AUDIO + RENDER + TOPOLOGY
+  0,                                  // CategoryCount
+  NULL                                // Categories
 };
 
 #endif

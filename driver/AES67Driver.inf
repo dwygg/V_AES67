@@ -68,13 +68,6 @@ AddReg=AES67Driver.AddReg
 AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_Wave%,AES67Driver.I.Wave
 AddInterface=%KSCATEGORY_RENDER%,%KSNAME_Wave%,AES67Driver.I.Wave
 AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_Topology%,AES67Driver.I.Topo
-; FIX (P2): audiodg surfaces the *topology* filter as the user-visible MMDevice
-; endpoint. Without registering the topology interface under KSCATEGORY_RENDER,
-; the endpoint is never classified as a render endpoint, so
-; EnumAudioEndpoints(eRender) returns nothing for AES67Driver even though the
-; PnP node exists and the wave filter advertises RENDER. Register RENDER for
-; topology too so the render endpoint is actually created.
-AddInterface=%KSCATEGORY_RENDER%,%KSNAME_Topology%,AES67Driver.I.Topo
 
 [AES67Driver.NT.Services]
 AddService=AES67Driver,0x00000002,AES67Driver_Service_Inst
