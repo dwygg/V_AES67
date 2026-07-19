@@ -339,9 +339,16 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         return;
     }
 
-    if (!Start()) {
-        Logger::Instance().Error("Engine start failed");
-        return;
+    // P2: panel-hosted mode. With autoStart=false the engine stays Initialized
+    // (pipe already listening from Initialize) and waits for the panel to send
+    // START. Legacy CLI (autoStart=true, the default) starts audio immediately.
+    if (config.autoStart) {
+        if (!Start()) {
+            Logger::Instance().Error("Engine start failed");
+            return;
+        }
+    } else {
+        Logger::Instance().Info("Managed mode: engine initialized, waiting for START from panel (pipe listening)");
     }
 
     DWORD tickStart = GetTickCount();
@@ -384,8 +391,10 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         DWORD now = GetTickCount();
         DWORD elapsed = (now > tickStart) ? (now - tickStart) / 1000 : 0;
 
-        // Check duration (only meaningful while actively running)
-        if (config.durationSec > 0 && elapsed >= config.durationSec) {
+        // Check duration (only meaningful while actively running, and only in
+        // legacy auto-start CLI mode; in panel-hosted mode the engine is a
+        // long-lived process controlled by START/STOP, so duration is ignored).
+        if (config.autoStart && config.durationSec > 0 && elapsed >= config.durationSec) {
             Logger::Instance().Info("Duration reached (%us)", config.durationSec);
             break;
         }

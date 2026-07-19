@@ -196,14 +196,20 @@ void MainWindow::updateDisplay(const std::map<std::string, std::string>& s) {
 }
 
 void MainWindow::onStartStop() {
-    std::string resp = m_pipe.SendCommand("STATUS");
-    if (resp.empty()) return;
-    auto s = PipeClient::ParseStatus(resp);
-    if (s["state"] == "running") {
-        m_pipe.SendCommand("STOP");
-    } else {
-        m_pipe.SendCommand("START");
+    // P2 fix: decide from the button's current label (kept in sync every second
+    // by updateDisplay) instead of doing an extra STATUS round-trip here. The
+    // old code sent STATUS first and returned silently if that reply was empty
+    // (e.g. hit the brief window between pipe-instance accepts), so the click
+    // "did nothing". Sending START/STOP directly avoids that failure mode.
+    const bool running = (m_btnStartStop->text() == "Stop");
+    std::string resp = m_pipe.SendCommand(running ? "STOP" : "START");
+    if (resp.empty() || resp.rfind("ERR", 0) == 0) {
+        statusBar()->showMessage(
+            QString("Command failed: %1").arg(QString::fromStdString(resp)), 3000);
+        return;
     }
+    // Reflect the new state immediately, then let the timer keep it in sync.
+    refreshStatus();
 }
 
 void MainWindow::onApplySettings() {

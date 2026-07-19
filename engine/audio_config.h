@@ -24,6 +24,12 @@ struct AudioConfig {
     UINT32 durationSec   = kDefaultDurationSec;
     UINT32 periodUs      = kDefaultPeriodUs;           // microseconds
 
+    // P2: panel-hosted mode. When false, RunBlocking initializes the engine and
+    // keeps the pipe listening but does NOT auto-start audio — it stays in the
+    // Initialized/Stopped state until the panel sends START. Default true keeps
+    // the legacy CLI behavior (auto-start + run for durationSec).
+    bool   autoStart     = true;
+
     // Derived fields
     UINT16 blockAlign     = 0;
     UINT32 avgBytesPerSec = 0;
