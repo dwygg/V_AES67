@@ -60,6 +60,12 @@ ComPtr<IMMDevice> FindAudioDevice(
     EDataFlow flow,
     const wchar_t* nameSubstring);
 
+// ---- Diagnostic: log every ACTIVE render endpoint's friendly name ----
+// Used when the AES67Driver endpoint cannot be found, so the user can see what
+// endpoints actually exist / how the driver endpoint is named / whether it is
+// enabled (a disabled endpoint won't appear in DEVICE_STATE_ACTIVE at all).
+void LogRenderEndpoints(IMMDeviceEnumerator* enumerator);
+
 // ---- Core WASAPI client wrapper ----
 class WasapiClient {
 public:

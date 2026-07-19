@@ -42,6 +42,51 @@ ComPtr<IMMDevice> FindAudioDevice(
     return result;
 }
 
+// ---- Diagnostic: enumerate ALL render endpoints (any state) ----
+void LogRenderEndpoints(IMMDeviceEnumerator* enumerator) {
+    if (!enumerator) return;
+    // DEVICE_STATEMASK_ALL = ACTIVE|DISABLED|NOTPRESENT|UNPLUGGED, so a driver
+    // endpoint that exists but is disabled/unplugged still shows up here.
+    IMMDeviceCollection* coll = nullptr;
+    if (FAILED(enumerator->EnumAudioEndpoints(
+            eRender, DEVICE_STATEMASK_ALL, &coll)) || !coll) {
+        Logger::Instance().Error("  (failed to enumerate render endpoints)");
+        return;
+    }
+    UINT count = 0;
+    coll->GetCount(&count);
+    if (count == 0) {
+        Logger::Instance().Error("  (no render endpoints present at all)");
+    }
+    for (UINT i = 0; i < count; i++) {
+        IMMDevice* dev = nullptr;
+        if (FAILED(coll->Item(i, &dev))) continue;
+
+        DWORD state = 0;
+        dev->GetState(&state);
+        const char* stateStr =
+            (state == DEVICE_STATE_ACTIVE)     ? "ACTIVE" :
+            (state == DEVICE_STATE_DISABLED)   ? "DISABLED" :
+            (state == DEVICE_STATE_NOTPRESENT) ? "NOTPRESENT" :
+            (state == DEVICE_STATE_UNPLUGGED)  ? "UNPLUGGED" : "?";
+
+        IPropertyStore* props = nullptr;
+        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
+            PROPVARIANT var;
+            PropVariantInit(&var);
+            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var)) && var.pwszVal) {
+                Logger::Instance().Info("  [render %u] %-10s %ls", i, stateStr, var.pwszVal);
+            } else {
+                Logger::Instance().Info("  [render %u] %-10s (no name)", i, stateStr);
+            }
+            PropVariantClear(&var);
+            props->Release();
+        }
+        dev->Release();
+    }
+    coll->Release();
+}
+
 // ---- WasapiClient ----
 
 WasapiClient::~WasapiClient() {

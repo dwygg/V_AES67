@@ -42,13 +42,26 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
     if (hasTx) {
         m_device = FindAudioDevice(m_enumerator.Get(), eRender, kTargetDeviceName);
         if (!m_device) {
-            Logger::Instance().Error("AES67Driver render endpoint not found (TX).");
-            return false;
-        }
-        hr = m_client.InitLoopback(m_device.Get(), m_config);
-        if (FAILED(hr)) {
-            Logger::Instance().Error("TX InitLoopback failed: 0x%08X", hr);
-            return false;
+            // NON-FATAL: keep the engine alive so the pipe still comes up and the
+            // panel can connect. Previously this returned false, which meant the
+            // whole engine exited before m_pipeServer.Start() -> panel could never
+            // connect. Instead we disable TX, log a clear diagnostic listing every
+            // active render endpoint (so the user can see what the driver endpoint
+            // is actually called / whether it is enabled).
+            Logger::Instance().Error(
+                "AES67Driver render endpoint not found (TX). TX disabled. "
+                "Active render endpoints follow:");
+            LogRenderEndpoints(m_enumerator.Get());
+            m_netConfig.enableTx = false;
+            hasTx = false;
+        } else {
+            hr = m_client.InitLoopback(m_device.Get(), m_config);
+            if (FAILED(hr)) {
+                Logger::Instance().Error(
+                    "TX InitLoopback failed: 0x%08X. TX disabled.", hr);
+                m_netConfig.enableTx = false;
+                hasTx = false;
+            }
         }
     }
 
@@ -84,14 +97,18 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
             coll->Release();
         }
         if (!m_deviceRx) {
-            Logger::Instance().Error("No non-AES67Driver render device found for RX output.");
-            return false;
+            // NON-FATAL (same rationale as TX): disable RX, keep engine alive.
+            Logger::Instance().Error(
+                "No non-AES67Driver render device found for RX output. RX disabled.");
+            m_netConfig.enableRx = false;
+            hasRx = false;
+        } else if (!m_audioRenderThread.Initialize(m_deviceRx.Get(), m_config)) {
+            Logger::Instance().Error("RX render init failed. RX disabled.");
+            m_netConfig.enableRx = false;
+            hasRx = false;
+        } else {
+            m_jitterBuffer.Reset();
         }
-        if (!m_audioRenderThread.Initialize(m_deviceRx.Get(), m_config)) {
-            Logger::Instance().Error("RX render init failed");
-            return false;
-        }
-        m_jitterBuffer.Reset();
     }
 
     // M9: Set up IPC command handler
