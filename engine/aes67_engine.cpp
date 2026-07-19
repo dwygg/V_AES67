@@ -176,6 +176,19 @@ bool Aes67Engine::Start() {
 
     m_stats.Reset();
 
+    // Guard: the loopback capture client is only initialized when TX is enabled
+    // (see Initialize: `if (hasTx) m_client.InitLoopback(...)`). If the engine was
+    // launched with --no-tx, m_client is empty and starting the audio thread would
+    // fail deep inside with E_POINTER (0x80004003). Detect it here and give a clear
+    // reason instead of a cryptic HRESULT.
+    if (!m_client.GetClient()) {
+        Logger::Instance().Error(
+            "Cannot start audio: loopback capture not initialized "
+            "(engine was launched with --no-tx). Restart the engine WITHOUT --no-tx "
+            "so the AES67Driver loopback capture is set up.");
+        return false;
+    }
+
     // Start audio thread (with optional ring buffer for M5 transmit)
     RingBuffer* rb = m_netConfig.enableTx ? &m_ringBuffer : nullptr;
     if (!m_thread.Start(&m_client, &m_stats, rb, m_config.blockAlign)) {

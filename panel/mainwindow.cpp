@@ -158,7 +158,10 @@ void MainWindow::refreshStatus() {
         return;
     }
 
-    statusBar()->showMessage("Connected");
+    // "Engine connected" refers to the pipe/process link, independent of whether
+    // audio is streaming. After STOP the engine process (and pipe) stay alive so
+    // you can START again — so Connected + Stopped is the expected combination.
+    statusBar()->showMessage("Engine connected");
     auto s = PipeClient::ParseStatus(resp);
     updateDisplay(s);
 }

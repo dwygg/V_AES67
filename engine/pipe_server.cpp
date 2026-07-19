@@ -87,7 +87,8 @@ void PipeServer::RunLoop() {
 
         BOOL connected = ConnectNamedPipe(hPipe, &ov);
         DWORD err = connected ? ERROR_SUCCESS : GetLastError();
-        Logger::Instance().Info("ConnectNamedPipe returned: connected=%d err=%lu", (int)connected, err);
+        // Note: err=997 (ERROR_IO_PENDING) is the normal async path — not logged
+        // to avoid spamming the console once per STATUS poll.
 
         bool ready = false;
         if (connected) {
@@ -164,7 +165,11 @@ void PipeServer::HandleClient(HANDLE hPipe) {
     char cmd[64] = {}, arg[256] = {};
     sscanf_s(buf, "%63s %255[^\r\n]", cmd, (unsigned)_countof(cmd), arg, (unsigned)_countof(arg));
 
-    Logger::Instance().Info("Pipe recv: cmd='%s' arg='%s'", cmd, arg);
+    // Only log non-STATUS commands: STATUS is polled every second by the panel
+    // and would otherwise flood the console.
+    if (_stricmp(cmd, "STATUS") != 0) {
+        Logger::Instance().Info("Pipe recv: cmd='%s' arg='%s'", cmd, arg);
+    }
 
     std::string response = m_handler(cmd, arg);
     response += '\n';
