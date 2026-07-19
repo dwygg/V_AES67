@@ -148,12 +148,7 @@ Return Value:
                     WAVEFORMATEXTENSIBLE* pWfxT = (WAVEFORMATEXTENSIBLE*)pWfx;
                     dwChannelMask = pWfxT->dwChannelMask;
                 }
-                if (g_UseIVSHMEM) {
-                    ntStatus = m_IVSHMEMSaveData.Initialize(pWfx->nSamplesPerSec, pWfx->wBitsPerSample, pWfx->nChannels, dwChannelMask);
-                }
-                else {
-                    ntStatus = m_SaveData.Initialize(pWfx->nSamplesPerSec, pWfx->wBitsPerSample, pWfx->nChannels, dwChannelMask);
-                }
+                ntStatus = m_SaveData.Initialize(pWfx->nSamplesPerSec, pWfx->wBitsPerSample, pWfx->nChannels, dwChannelMask);
             }
         }
     }
@@ -466,12 +461,7 @@ Return Value:
     
                 // Wait until all work items are completed.
                 if (!m_fCapture) {
-                    if (g_UseIVSHMEM) {
-                        m_IVSHMEMSaveData.WaitAllWorkItems();
-                    }
-                    else {
-                        m_SaveData.WaitAllWorkItems();
-                    }
+                    m_SaveData.WaitAllWorkItems();
                 }
                 break;
         }
@@ -639,72 +629,67 @@ Return Value:
 {
     UNREFERENCED_PARAMETER(Destination);
 
-    if (g_UseIVSHMEM) {
-        m_IVSHMEMSaveData.WriteData((PBYTE)Source, ByteCount);
-    }
-    else {
-        ULONG start_copy_byte = 0;
-        ULONG bytes_per_sample = m_bitsPerSample / 8;
-        ULONG sample_count = ByteCount / bytes_per_sample;
+    ULONG start_copy_byte = 0;
+    ULONG bytes_per_sample = m_bitsPerSample / 8;
+    ULONG sample_count = ByteCount / bytes_per_sample;
 
-        // Check for silence, if the relevant registry entry is set
-        if (g_silenceThreshold > 0)  {
-            for (unsigned int i = 0; i < sample_count; i++) {
-                // Work out if samples worth of bytes is zero
-                BOOL current_sample_is_silent = FALSE;
-            
-                // At this stage, the data in the Source buffer is PCM audio, 16/24/32 bit signed integers
-                // Tests have shown playing a .wav file of pure silence generates PCM values between -2 and +2
+    // Check for silence, if the relevant registry entry is set
+    if (g_silenceThreshold > 0)  {
+        for (unsigned int i = 0; i < sample_count; i++) {
+            // Work out if samples worth of bytes is zero
+            BOOL current_sample_is_silent = FALSE;
 
-                // 16-bit
-                if ((bytes_per_sample == 2) && (abs(((INT16*)Source)[i]) < SILENCE_SAMPLE_LEVEL)) {
-                    current_sample_is_silent = TRUE;
+            // At this stage, the data in the Source buffer is PCM audio, 16/24/32 bit signed integers
+            // Tests have shown playing a .wav file of pure silence generates PCM values between -2 and +2
+
+            // 16-bit
+            if ((bytes_per_sample == 2) && (abs(((INT16*)Source)[i]) < SILENCE_SAMPLE_LEVEL)) {
+                current_sample_is_silent = TRUE;
+            }
+            // 24-bit is not yet supported, would need some extra code to up-scale the sample to 32-bit for checking
+
+            // For 32-bit, the 16-bit threshold is scaled up to match the 32-bit range
+            if ((bytes_per_sample == 4) && (abs(((INT32*)Source)[i]) < (65536 * SILENCE_SAMPLE_LEVEL))) {
+                current_sample_is_silent = TRUE;
+            }
+
+            if (m_silenceState > g_silenceThreshold) {
+                // Current state: Silent
+                if (!current_sample_is_silent) {
+                    // State transition: Silent -> Not Silent
+                    m_silenceState = 0;
+                    start_copy_byte = (i / m_bChannels) * m_bChannels * bytes_per_sample;
                 }
-                // 24-bit is not yet supported, would need some extra code to up-scale the sample to 32-bit for checking
+            }
+            else if (m_silenceState > 0) {
+                // Current state : Gap
+                if (current_sample_is_silent) {
+                    m_silenceState++;
+                    if (m_silenceState > g_silenceThreshold) {
+                        // State transition: Gap -> Silent
 
-                // For 32-bit, the 16-bit threshold is scaled up to match the 32-bit range
-                if ((bytes_per_sample == 4) && (abs(((INT32*)Source)[i]) < (65536 * SILENCE_SAMPLE_LEVEL))) {
-                    current_sample_is_silent = TRUE;
-                }
-
-                if (m_silenceState > g_silenceThreshold) {
-                    // Current state: Silent
-                    if (!current_sample_is_silent) {
-                        // State transition: Silent -> Not Silent
-                        m_silenceState = 0;
-                        start_copy_byte = (i / m_bChannels) * m_bChannels * bytes_per_sample;
-                    }
-                }
-                else if (m_silenceState > 0) {
-                    // Current state : Gap
-                    if (current_sample_is_silent) {
-                        m_silenceState++;
-                        if (m_silenceState > g_silenceThreshold) {
-                            // State transition: Gap -> Silent
-
-                            // Need to write out whatever has occurred so far
-                            m_SaveData.WriteData(((PBYTE)Source + start_copy_byte), ((i / m_bChannels) * m_bChannels * bytes_per_sample) - start_copy_byte);
-                        }
-                    }
-                    else {
-                        // State transition: Gap -> Not Silent
-                        m_silenceState = 0;
+                        // Need to write out whatever has occurred so far
+                        m_SaveData.WriteData(((PBYTE)Source + start_copy_byte), ((i / m_bChannels) * m_bChannels * bytes_per_sample) - start_copy_byte);
                     }
                 }
                 else {
-                    // Current state : Not Silent
-                    if (current_sample_is_silent) {
-                        // State transition: Not Silent -> Gap
-                        m_silenceState++;
-                    }
+                    // State transition: Gap -> Not Silent
+                    m_silenceState = 0;
+                }
+            }
+            else {
+                // Current state : Not Silent
+                if (current_sample_is_silent) {
+                    // State transition: Not Silent -> Gap
+                    m_silenceState++;
                 }
             }
         }
+    }
 
-        // Finished checking; if we are in Silence we should not write out, but Gap or Not Silent should be written out
-        if (m_silenceState <= g_silenceThreshold) {
-            m_SaveData.WriteData(((PBYTE)Source + start_copy_byte), ByteCount - start_copy_byte);
-        }
+    // Finished checking; if we are in Silence we should not write out, but Gap or Not Silent should be written out
+    if (m_silenceState <= g_silenceThreshold) {
+        m_SaveData.WriteData(((PBYTE)Source + start_copy_byte), ByteCount - start_copy_byte);
     }
 } // CopyTo
 

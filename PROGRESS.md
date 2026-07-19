@@ -8,13 +8,13 @@
 | 日期 | 阶段 | 状态 | git tag | 结果 / 备注 |
 |---|---|:---:|---|---|
 | 2026-07-19 | — | — | — | 文档基线：`方案设计.md` / `开发计划.md` / `CODE_REVIEW.md` 定稿；引入本进度机制 |
-| 2026-07-19 | P1 清理驱动 Scream 残留 | 🚧 进行中 | `p1-done`(待打) | 删 WSK 组播 / ivshmem / 换皮标识；死缓冲与空壳 IOCTL 标注为 P9 占位 |
+| 2026-07-19 | P1 清理驱动 Scream 残留 | ✅ 完成 | `p1-done` | 删 WSK 组播发包引擎 + ivshmem（净删 ~1250 行）；CSaveData 掏空为哑 sink（保留公共接口签名）；网络全局变量/注册表项全删；换皮标识（PoolTag→AS67 / .rc / .inf / DriverVer）；死缓冲、空壳 IOCTL、符号链接、METHOD 不一致均标注 `TODO(P9)`。**Windows 实测已通过**：编译干净、驱动加载不蓝屏、声音设置出现 AES67Driver 播放端点。修坑记录：IOCTL handler 误入 INIT 段致 0xFC（移到 PAGE 段修复）；`MmGetPhysicalAddress` 引 ntddk.h 冲突（P9 空壳暂填 0）。已合入 main、打 `p1-done` |
 
 ---
 
 ## 阶段清单速览
 
-- [ ] **P1** 清理驱动 Scream 残留　🚧
+- [x] **P1** 清理驱动 Scream 残留　✅ `p1-done`
 - [ ] **P2** 修 M9 死锁 + pipe 生命周期
 - [ ] **P3** 修 SAP 地址 + 锁死音频格式 ⭐
 - [ ] **P4** 路由契约(JSON) + 引擎读表
