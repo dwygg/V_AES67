@@ -56,6 +56,7 @@ DWORD WINAPI PipeServer::ThreadProc(LPVOID param) {
 void PipeServer::RunLoop() {
     // A single reusable event for the async ConnectNamedPipe.
     HANDLE hConnectEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    Logger::Instance().Info("Pipe RunLoop started, waiting for clients on %ls", kPipeName);
 
     while (m_running.load(std::memory_order_acquire)) {
         // CRITICAL: the pipe MUST be created with FILE_FLAG_OVERLAPPED, otherwise
@@ -72,8 +73,12 @@ void PipeServer::RunLoop() {
             4096, 4096, kTimeout, nullptr);
 
         if (hPipe == INVALID_HANDLE_VALUE) {
-            Logger::Instance().Error("CreateNamedPipe failed: %lu", GetLastError());
-            break;
+            // Do NOT break the loop on a transient failure — that would leave the
+            // engine alive but permanently deaf (panel stuck "Disconnected").
+            // Back off briefly and retry so the server self-heals.
+            Logger::Instance().Error("CreateNamedPipe failed: %lu — retrying in 200ms", GetLastError());
+            if (WaitForSingleObject(m_stopEvent, 200) == WAIT_OBJECT_0) break;
+            continue;
         }
 
         ResetEvent(hConnectEvent);
@@ -157,6 +162,8 @@ void PipeServer::HandleClient(HANDLE hPipe) {
     // Parse command and optional argument
     char cmd[64] = {}, arg[256] = {};
     sscanf_s(buf, "%63s %255[^\r\n]", cmd, (unsigned)_countof(cmd), arg, (unsigned)_countof(arg));
+
+    Logger::Instance().Info("Pipe recv: cmd='%s' arg='%s'", cmd, arg);
 
     std::string response = m_handler(cmd, arg);
     response += '\n';
