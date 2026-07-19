@@ -1,0 +1,12 @@
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+This project is derived from Scream (duncanthrax/scream), which is licensed
+under GPLv3. As a derivative work, this project is also licensed under GPLv3.
+
+Full license text: https://www.gnu.org/licenses/gpl-3.0.txt
+
+The Steinberg ASIO SDK is required to build the ASIO driver component.
+Due to Steinberg's licensing terms, the ASIO SDK is NOT included in this
+repository. Please download it separately from www.steinberg.net and place
+it in the docs/ASIOSDK/ directory before building.

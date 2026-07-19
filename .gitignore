@@ -12,3 +12,6 @@ _build.log
 __pycache__/
 .vs/
 x64/
+docs/ASIOSDK/
+Windows-driver-samples/
+scream/

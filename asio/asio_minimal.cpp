@@ -45,29 +45,29 @@ static std::atomic<uint32_t> g_rtpSeq{0},g_rtpTs{0};
 
 // --- Ring Buffer ---
 static constexpr size_t RB_N=65536,RB_M=RB_N-1;
-static BYTE g_rb[RB_N];static size_t g_rbH=0,g_rbT=0;
+static BYTE g_rb[RB_N];static std::atomic<size_t> g_rbH{0},g_rbT{0};
 
 // --- Jitter Buffer ---
 static constexpr size_t JB_S=256,JB_M=255,JB_P=288;
 static BYTE g_jb_slots[JB_S][JB_P];static bool g_jb_v[JB_S]={};static uint16_t g_jb_q[JB_S]={};
-static uint16_t g_jb_r=0;static bool g_jb_sync=false;
+static std::atomic<uint16_t> g_jb_r{0};static bool g_jb_sync=false;
 
 // --- RTP ---
 static void RTP_Hdr(BYTE*p,uint16_t s,uint32_t t,uint32_t ss){p[0]=0x80;p[1]=0x61;p[2]=s>>8;p[3]=s&0xFF;p[4]=t>>24;p[5]=t>>16;p[6]=t>>8;p[7]=t&0xFF;p[8]=ss>>24;p[9]=ss>>16;p[10]=ss>>8;p[11]=ss&0xFF;}
 
 // --- Threads ---
-static DWORD WINAPI TxThread(LPVOID){BYTE b[1500],z[288]={};while(g_running.load()){size_t a=(g_rbH-g_rbT)&RB_M,n=a<288?a:288,c=RB_N-g_rbT;if(n<=c)memcpy(b+12,g_rb+g_rbT,n);else{memcpy(b+12,g_rb+g_rbT,c);memcpy(b+12+c,g_rb,n-c);}g_rbT=(g_rbT+n)&RB_M;if(n<288)memcpy(b+12+n,z,288-n);uint16_t s=(uint16_t)g_rtpSeq.fetch_add(1);uint32_t t=g_rtpTs.fetch_add(48);RTP_Hdr(b,s,t,g_ssrc);sendto(g_sockTx,(char*)b,300,0,(sockaddr*)&g_mcast,sizeof(g_mcast));Sleep(1);}return 0;}
-static DWORD WINAPI RxThread(LPVOID){BYTE b[1500];while(g_running.load()){sockaddr_in f;int fl=sizeof(f);int n=recvfrom(g_sockRx,(char*)b,1500,0,(sockaddr*)&f,&fl);if(n==SOCKET_ERROR){if(!g_running.load())break;continue;}if(n<12||(b[0]>>6)!=2||(b[1]&0x7F)!=97)continue;int pl=n-12;if(pl<288)continue;uint16_t seq=((uint16_t)b[2]<<8)|b[3];if(!g_jb_sync){g_jb_r=seq;g_jb_sync=true;}int16_t a=(int16_t)(seq-g_jb_r);if(a<0||a>=(int16_t)JB_S)continue;size_t i=seq&JB_M;g_jb_v[i]=true;g_jb_q[i]=seq;memcpy(g_jb_slots[i],b+12,JB_P);}return 0;}
+static DWORD WINAPI TxThread(LPVOID){BYTE b[1500],z[288]={};while(g_running.load()){size_t head=g_rbH.load(std::memory_order_acquire),tail=g_rbT.load(std::memory_order_acquire);size_t a=(head-tail)&RB_M,n=a<288?a:288,c=RB_N-tail;if(n<=c)memcpy(b+12,g_rb+tail,n);else{memcpy(b+12,g_rb+tail,c);memcpy(b+12+c,g_rb,n-c);}g_rbT.store((tail+n)&RB_M,std::memory_order_release);if(n<288)memcpy(b+12+n,z,288-n);uint16_t s=(uint16_t)g_rtpSeq.fetch_add(1);uint32_t t=g_rtpTs.fetch_add(48);RTP_Hdr(b,s,t,g_ssrc);sendto(g_sockTx,(char*)b,300,0,(sockaddr*)&g_mcast,sizeof(g_mcast));Sleep(1);}return 0;}
+static DWORD WINAPI RxThread(LPVOID){BYTE b[1500];while(g_running.load()){sockaddr_in f;int fl=sizeof(f);int n=recvfrom(g_sockRx,(char*)b,1500,0,(sockaddr*)&f,&fl);if(n==SOCKET_ERROR){if(!g_running.load())break;continue;}if(n<12||(b[0]>>6)!=2||(b[1]&0x7F)!=97)continue;int pl=n-12;if(pl<288)continue;uint16_t seq=((uint16_t)b[2]<<8)|b[3];if(!g_jb_sync){g_jb_r.store(seq,std::memory_order_release);g_jb_sync=true;}int16_t a=(int16_t)(seq-g_jb_r.load(std::memory_order_acquire));if(a<0||a>=(int16_t)JB_S)continue;size_t i=seq&JB_M;g_jb_v[i]=true;g_jb_q[i]=seq;memcpy(g_jb_slots[i],b+12,JB_P);}return 0;}
 static DWORD WINAPI AudioThread(LPVOID){timeBeginPeriod(1);HANDLE t=CreateWaitableTimerExW(nullptr,nullptr,2,TIMER_ALL_ACCESS);if(!t)t=CreateWaitableTimerW(nullptr,FALSE,nullptr);LONGLONG ph=(LONGLONG)((double)kBufSize/kSampleRate*1e7);LARGE_INTEGER d;d.QuadPart=-ph;SetWaitableTimer(t,&d,0,nullptr,nullptr,FALSE);while(g_running.load()){HANDLE w[2]={t,g_hStop};if(WaitForMultipleObjects(2,w,FALSE,INFINITE)!=WAIT_OBJECT_0)break;long idx=g_doubleIdx;
 // ---- RX: fill ASIO input buffers from jitter (L24→int32, per-channel non-interleaved) ----
-for(long ch=0;ch<kNumIn;ch++){if(!g_bi||!g_bi[ch].buffers[idx])continue;int32_t*dst=(int32_t*)g_bi[ch].buffers[idx];BYTE jb[288];if(g_jb_v[g_jb_r&JB_M]&&g_jb_q[g_jb_r&JB_M]==g_jb_r){memcpy(jb,g_jb_slots[g_jb_r&JB_M],JB_P);g_jb_v[g_jb_r&JB_M]=false;}else{memset(jb,0,JB_P);}g_jb_r++;for(long s=0;s<kBufSize;s++){long o=s*6+ch*3;dst[s]=jb[o]|(jb[o+1]<<8)|((int32_t)(int8_t)jb[o+2]<<16);}}
+for(long ch=0;ch<kNumIn;ch++){if(!g_bi||!g_bi[ch].buffers[idx])continue;int32_t*dst=(int32_t*)g_bi[ch].buffers[idx];BYTE jb[288];uint16_t jr=g_jb_r.load(std::memory_order_acquire);if(g_jb_v[jr&JB_M]&&g_jb_q[jr&JB_M]==jr){memcpy(jb,g_jb_slots[jr&JB_M],JB_P);g_jb_v[jr&JB_M]=false;}else{memset(jb,0,JB_P);}g_jb_r.store(jr+1,std::memory_order_release);for(long s=0;s<kBufSize;s++){long o=s*6+ch*3;dst[s]=jb[o]|(jb[o+1]<<8)|((int32_t)(int8_t)jb[o+2]<<16);}}
 // ---- Call DAW ----
 if(g_cb.bufferSwitch)g_cb.bufferSwitch(idx,ASIOFalse);
 // ---- TX: read ASIO output buffers → L24 → ring buffer (per-channel non-interleaved) ----
 BYTE pcm[288];memset(pcm,0,288);
 for(long ch=0;ch<kNumOut;ch++){long bi=kNumIn+ch;if(!g_bi||!g_bi[bi].buffers[idx])continue;int32_t*src=(int32_t*)g_bi[bi].buffers[idx];for(long s=0;s<kBufSize;s++){int32_t v=src[s];if(v>8388607)v=8388607;if(v<-8388608)v=-8388608;long o=(s*kNumOut+ch)*3;pcm[o]=v&0xFF;pcm[o+1]=(v>>8)&0xFF;pcm[o+2]=(v>>16)&0xFF;}}
 // Write 288B (48 frames × 2ch × 3B L24) to TX ring
-size_t u=(g_rbH-g_rbT)&RB_M,fr=RB_N-u-1,n=288<fr?288:fr,c=RB_N-g_rbH;if(n<=c)memcpy(g_rb+g_rbH,pcm,n);else{memcpy(g_rb+g_rbH,pcm,c);memcpy(g_rb,pcm+c,n-c);}g_rbH=(g_rbH+n)&RB_M;
+size_t head=g_rbH.load(std::memory_order_acquire),tail=g_rbT.load(std::memory_order_acquire);size_t u=(head-tail)&RB_M,fr=RB_N-u-1,n=288<fr?288:fr,c=RB_N-head;if(n<=c)memcpy(g_rb+head,pcm,n);else{memcpy(g_rb+head,pcm,c);memcpy(g_rb,pcm+c,n-c);}g_rbH.store((head+n)&RB_M,std::memory_order_release);
 g_doubleIdx^=1;d.QuadPart=-ph;SetWaitableTimer(t,&d,0,nullptr,nullptr,FALSE);}CancelWaitableTimer(t);CloseHandle(t);timeEndPeriod(1);return 0;}
 
 class AES67Asio:public IASIO{ULONG m_ref=1;
@@ -87,7 +87,7 @@ public:
         sockaddr_in l={};l.sin_family=AF_INET;l.sin_port=htons(5004);bind(g_sockRx,(sockaddr*)&l,sizeof(l));
         ip_mreq mr={};inet_pton(AF_INET,"239.69.1.128",&mr.imr_multiaddr);setsockopt(g_sockRx,IPPROTO_IP,IP_ADD_MEMBERSHIP,(char*)&mr,sizeof(mr));
         srand((unsigned)GetTickCount());g_ssrc=(uint32_t)(((uint64_t)rand()<<16)^rand());g_rtpSeq.store((uint16_t)rand());g_rtpTs.store((uint32_t)rand());
-        g_rbH=g_rbT=0;g_doubleIdx=0;g_jb_sync=false;g_jb_r=0;memset(g_jb_v,0,sizeof(g_jb_v));
+        g_rbH.store(0);g_rbT.store(0);g_doubleIdx=0;g_jb_sync=false;g_jb_r.store(0);memset(g_jb_v,0,sizeof(g_jb_v));
         g_running.store(true);ResetEvent(g_hStop);
         g_hTx=CreateThread(nullptr,0,TxThread,nullptr,0,nullptr);
         g_hRx=CreateThread(nullptr,0,RxThread,nullptr,0,nullptr);
@@ -105,7 +105,7 @@ public:
     }
     ASIOError getChannels(long*i,long*o)override{if(i)*i=kNumIn;if(o)*o=kNumOut;return ASE_OK;}
     ASIOError getLatencies(long*il,long*ol)override{if(il)*il=96;if(ol)*ol=96;return ASE_OK;}
-    ASIOError getBufferSize(long*a,long*b,long*c,long*d)override{if(a)*a=16;if(b)*b=2048;if(c)*c=kBufSize;if(d)*d=16;return ASE_OK;}
+    ASIOError getBufferSize(long*a,long*b,long*c,long*d)override{if(a)*a=kBufSize;if(b)*b=kBufSize;if(c)*c=kBufSize;if(d)*d=0;return ASE_OK;}
     ASIOError canSampleRate(ASIOSampleRate sr)override{if(sr>=44099.0&&sr<=44101.0)return ASE_OK;if(sr>=47999.0&&sr<=48001.0)return ASE_OK;if(sr>=95999.0&&sr<=96001.0)return ASE_OK;return ASE_NoClock;}
     ASIOError getSampleRate(ASIOSampleRate*s)override{if(s)*s=kSampleRate;return ASE_OK;}
     ASIOError setSampleRate(ASIOSampleRate s)override{return canSampleRate(s);}

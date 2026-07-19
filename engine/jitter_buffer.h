@@ -18,7 +18,7 @@ public:
     }
 
     void Reset() {
-        memset(m_valid, 0, sizeof(m_valid));
+        for (auto& v : m_valid) v.store(false, std::memory_order_relaxed);
         memset(m_slots, 0, sizeof(m_slots));
         m_readSeq.store(0, std::memory_order_release);
         m_writeSeq.store(0, std::memory_order_release);
@@ -53,9 +53,13 @@ public:
                     m_droppedDup.fetch_add(1, std::memory_order_relaxed);
                     return false;  // duplicate
                 }
-                m_valid[idx] = true;
-                m_slotSeq[idx] = seq;
+                if (m_valid[idx].load(std::memory_order_relaxed) && m_slotSeq[idx] == seq) {
+                    m_droppedDup.fetch_add(1, std::memory_order_relaxed);
+                    return false;  // duplicate
+                }
                 memcpy(m_slots[idx], payload, kPayloadSize);
+                m_slotSeq[idx] = seq;
+                m_valid[idx].store(true, std::memory_order_release);
                 return true;
             }
             m_droppedLate.fetch_add(1, std::memory_order_relaxed);
@@ -65,13 +69,13 @@ public:
         // Within forward window
         if (aheadBy < (int16_t)kSlotCount) {
             size_t idx = (size_t)seq & kSlotMask;
-            if (m_valid[idx] && m_slotSeq[idx] == seq) {
+            if (m_valid[idx].load(std::memory_order_relaxed) && m_slotSeq[idx] == seq) {
                 m_droppedDup.fetch_add(1, std::memory_order_relaxed);
                 return false;  // duplicate
             }
-            m_valid[idx] = true;
-            m_slotSeq[idx] = seq;
             memcpy(m_slots[idx], payload, kPayloadSize);
+            m_slotSeq[idx] = seq;
+            m_valid[idx].store(true, std::memory_order_release);
 
             // Track the highest contiguous sequence received
             if (aheadBy > (int16_t)(writeSeq - readSeq)) {
@@ -93,9 +97,9 @@ public:
         uint16_t seq = m_readSeq.load(std::memory_order_relaxed);
         size_t idx = (size_t)seq & kSlotMask;
 
-        if (m_valid[idx] && m_slotSeq[idx] == seq) {
+        if (m_valid[idx].load(std::memory_order_acquire) && m_slotSeq[idx] == seq) {
             memcpy(dst, m_slots[idx], kPayloadSize);
-            m_valid[idx] = false;
+            m_valid[idx].store(false, std::memory_order_relaxed);
         } else {
             // Underflow: fill with silence
             memset(dst, 0, kPayloadSize);
@@ -124,7 +128,7 @@ public:
         uint16_t seq = readSeq;
         for (size_t i = 0; i < kSlotCount; i++) {
             size_t idx = (size_t)seq & kSlotMask;
-            if (m_valid[idx] && m_slotSeq[idx] == seq) {
+            if (m_valid[idx].load(std::memory_order_relaxed) && m_slotSeq[idx] == seq) {
                 count++;
                 seq++;
             } else {
@@ -142,9 +146,9 @@ public:
     size_t DroppedDup()  const { return m_droppedDup.load(std::memory_order_relaxed);  }
 
 private:
-    BYTE     m_slots[kSlotCount][kPayloadSize];
-    bool     m_valid[kSlotCount];
-    uint16_t m_slotSeq[kSlotCount];
+    BYTE                m_slots[kSlotCount][kPayloadSize];
+    std::atomic<bool>   m_valid[kSlotCount];
+    uint16_t            m_slotSeq[kSlotCount];
 
     std::atomic<uint16_t> m_readSeq{0};
     std::atomic<uint16_t> m_writeSeq{0};
