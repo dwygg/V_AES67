@@ -1,0 +1,22 @@
+EXPORTS
+    ASIOInit
+    ASIOExit
+    ASIOStart
+    ASIOStop
+    ASIOGetChannels
+    ASIOGetBufferSize
+    ASIOCanSampleRate
+    ASIOGetSampleRate
+    ASIOSetSampleRate
+    ASIOGetLatencies
+    ASIOGetClockSources
+    ASIOSetClockSource
+    ASIOGetSamplePosition
+    ASIOGetChannelInfo
+    ASIOCreateBuffers
+    ASIODisposeBuffers
+    ASIOControlPanel
+    ASIOFuture
+    ASIOOutputReady
+    DllGetClassObject = MyDllGetClassObject
+    DllCanUnloadNow   = MyDllCanUnloadNow

@@ -1,0 +1,15 @@
+Windows Registry Editor Version 5.00
+
+; AES67 Virtual ASIO Driver — DAW discovery via ASIO + COM registration
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\ASIO\AES67 Virtual ASIO]
+"CLSID"="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+"Description"="AES67 Virtual Soundcard ASIO Driver"
+
+; COM InprocServer32 — REQUIRED for Reaper and most DAWs
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}]
+@="AES67 Virtual ASIO"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}\InprocServer32]
+@="E:\\jmdev\\AES67\\asio\\AES67_ASIO.dll"
+"ThreadingModel"="Apartment"

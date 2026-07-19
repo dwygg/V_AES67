@@ -1,0 +1,14 @@
+*.exe
+*.obj
+*.dll
+*.exp
+*.lib
+*.pdb
+*.ipch
+*.db
+*.vsidx
+_build_tmp.bat
+_build.log
+__pycache__/
+.vs/
+x64/

@@ -1,0 +1,707 @@
+# Steinberg ASIO SDK 2\.3 官方文档（Markdown完整版）
+
+# Steinberg ASIO SDK 2\.3 官方文档（Markdown完整版）
+
+文档全称：Steinberg Audio Streaming Input Output Specification Development Kit 2\.3
+版权：\(c\) 1997\-2025, Steinberg Media Technologies GmbH
+版本：ASIO Interface Specification v2\.3
+
+## 目录
+
+I\. Overview 概述
+
+1. Introduction 简介
+
+2. The Goal 设计目标
+
+3. The Design 整体架构设计
+
+II\. Implementation Guide 实现指南
+
+1. Instantiation 驱动实例化
+
+2. Operation 状态机运行逻辑
+
+3. Driver Query by the Host Application 宿主查询驱动能力
+
+4. Host Query by the Driver 驱动查询宿主信息
+
+5. Audio Streaming 音频数据流处理
+
+6. Media Synchronization 媒体同步（采样位置与系统时间）
+
+7. Driver Notifications to the Host Application 驱动向宿主发送通知
+
+III\. Function Reference API函数参考
+
+1. Initialization/Termination 初始化/销毁
+
+2. Start/Stop 启停音频流
+
+3. Inquiry methods and sample rate 查询接口与采样率控制
+
+4. Buffer preparation 音频缓冲区管理
+
+5. Miscellaneous 杂项接口
+
+6. Callbacks 回调函数定义
+
+7. Type definitions 数据类型定义
+
+IV\. Host Utility API Reference 宿主工具类API
+
+1. AsioDrivers Class 驱动管理类
+
+V\. Appendix 附录
+A\. Using the bufferSwitchTimeInfo\(\) callback 带时间信息的缓冲区回调使用
+B\. Latency vs\. Sample Placement 延迟与采样位置关系
+C\. Test methods 驱动测试方案
+D\. Platform/OS Differences 跨平台系统差异
+E\. ASIODriver class for the driver implementation 驱动C\+\+基类
+F\. Sony DSD Support DSD音频格式支持
+G\. Microsoft Windows 64\-bit Win64系统兼容说明
+
+---
+
+# I\. Overview 概述
+
+## 1\. Introduction 简介
+
+本文档介绍一套面向PC高效音频处理系统的设计目标、实现方案与取舍逻辑。
+随着计算机硬件迭代，以及Steinberg VST插件标准普及，PC已成为大量专业音频处理场景的核心平台。
+
+## 2\. The Goal 设计目标
+
+传统操作系统原生音频接口仅支持双声道输入/输出，多通道扩展会出现严重同步问题。
+ASIO（Audio Stream I/O）由Steinberg推出，用于硬件厂商开发低延迟音频驱动，满足音乐人、音频工程师专业需求，核心能力覆盖：
+
+- 高效音频处理、高吞吐数据传输
+
+- 精准同步、极低延迟
+
+- 硬件通道无数量上限（受计算机性能限制）
+
+- 自由支持采样率：32kHz \~ 96kHz及更高
+
+- 多采样格式：16/24/32bit整数、32/64bit浮点
+
+- 兼容PCI、火线等高速硬件总线
+
+- 支持硬件DSP加速，同时接口保持简洁
+
+## 3\. The Design 整体架构设计
+
+1. **硬件抽象层**：音频硬件统一封装为ASIO驱动，由硬件厂商实现，屏蔽底层硬件差异。
+
+2. **环形双缓冲机制**：输入/输出通道独立环形数据块，采用双缓冲设计，相比交错缓冲区模型更利于宿主做自定义算法处理；缓冲区大小由驱动定义，适配硬件最优性能。
+
+3. **驱动分配内存**：音频数据内存由驱动分配，可自由选用DMA、内存映射IO，是实现低延迟的核心。
+
+4. **抢占式多任务兼容**：支持带时间戳事件通知、自适应预取，适配Windows、macOS、IRIX、BeOS等抢占式操作系统，同时兼容多核SMP、分布式音频处理。
+
+---
+
+# II\. Implementation Guide 实现指南
+
+## 1\. Instantiation 驱动实例化
+
+宿主应用加载驱动并完成绑定，不同操作系统实现方式不同，详见第四章「宿主工具API」与配套代码示例。
+
+## 2\. Operation 状态机运行逻辑
+
+### 状态流转图
+
+![Image](https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/authcode/?code=NThiYTVmZTNhNTQzZTMxZjI5ZGNiMmI4N2RlNWIwMWJfM2EyNzRkMTFhMTQ4NmE4ZDIwZTRlYjg4ZjRiMDk4NmVfSUQ6NzY2NDEzOTk1Mzk1MzA4MjYzN18xNzg0NDQ2NzI0OjE3ODQ1MzMxMjRfVjM)
+
+状态定义：
+
+1. **LOADED 已加载**：驱动代码可被应用访问
+
+2. **INITIALIZED 已初始化**：应用分配驱动资源，可发起能力查询，硬件不一定占用
+
+3. **PREPARED 已就绪**：音频缓冲区内存分配完成，硬件准备就绪
+
+4. **RUNNING 运行中**：硬件启动，音频数据流持续传输
+
+状态切换指令：
+
+|指令|对应API|作用|
+|---|---|---|
+|INIT|ASIOInit\(\)|初始化驱动，可选占用硬件、加载驱动组件|
+|CREATE BUFFERS|ASIOCreateBuffers\(\)|分配音频缓冲区内存、占用通道硬件资源|
+|START|ASIOStart\(\)|启动音频数据流|
+|STOP|ASIOStop\(\)|停止音频数据流|
+|DISPOSE BUFFERS|ASIODisposeBuffers\(\)|释放通道硬件资源、销毁缓冲区内存|
+|EXIT|ASIOExit\(\)|释放全部剩余资源，驱动退回未初始化状态|
+
+## 3\. Driver Query by the Host Application 宿主查询驱动能力
+
+驱动初始化后，宿主可调用以下查询接口获取硬件能力：
+
+|API函数|功能说明|
+|---|---|
+|ASIOGetChannels\(\)|查询可用输入/输出通道总数|
+|ASIOGetBufferSize\(\)|获取驱动支持的缓冲区尺寸范围|
+|ASIOCanSampleRate\(\)|判断硬件是否支持指定采样率|
+|ASIOGetSampleRate\(\)|获取当前生效采样率|
+|ASIOGetClockSources\(\)|获取硬件时钟源选项|
+|ASIOGetChannelInfo\(\)|查询单通道信息（采样格式、通道名、时钟分组）|
+|ASIOSetSampleRate\(\)|设置内部时钟采样率；外接时钟时作为基准速率|
+|ASIOSetClockSource\(\)|切换音频硬件时钟源|
+|ASIOGetLatencies\(\)|查询输入/输出固定延迟，必须在创建缓冲区后调用|
+
+### ASIO 2\.0 新增查询（通过ASIOFuture调用）
+
+- `kAsioCanTimeInfo`：是否支持`bufferSwitchTimeInfo`带时间戳回调
+
+- `kAsioCanTimeCode`：硬件是否支持时间码同步
+
+- `kAsioCanInputMonitor`：是否支持硬件直监
+
+### ASIO 2\.3 新增查询（通过ASIOFuture调用）
+
+1. `kAsioCanReportOverload`：驱动能否检测音频过载/爆音；返回成功时由驱动上报丢帧，通过`asioMessage`回调发送`kAsioOverload`消息
+
+2. `kAsioGetInternalBufferSamples`：查询驱动内部额外缓冲大小（USB声卡常用），宿主可据此优化性能、预估余量
+
+## 4\. Host Query by the Driver 驱动查询宿主信息
+
+进入PREPARED就绪状态后，驱动可通过`asioMessage`回调向宿主查询：
+
+- `kAsioSelectorSupported`：查询宿主是否支持指定消息类型
+
+- `kAsioEngineVersion`：查询宿主实现的ASIO版本，宿主需向下兼容低版本规范
+
+## 5\. Audio Streaming 音频数据流流程
+
+1. 调用`ASIOStart()`后启动音频流；硬件启动前，驱动会发起一次或多次`bufferSwitch`/`bufferSwitchTimeInfo`回调填充输出缓冲区，输入缓冲区填充静音。
+
+2. 硬件运行后，每当硬件需要新数据，驱动触发缓冲区回调，传递当前双缓冲索引给宿主。回调返回时，宿主必须读完输入数据、填充完整输出数据。
+
+3. `ASIOOutputReady()`接口：用于中断驱动（macOS）降低回调耗时；Windows线程模型可直接在回调内完成数据处理。宿主处理完缓冲区后调用该接口，驱动可直接拷贝数据至DMA硬件缓存，减少一整块延迟。
+
+## 6\. Media Synchronization 媒体同步（采样位置与系统时间）
+
+### 同步逻辑
+
+驱动在触发缓冲区回调时，抓取当前系统时间与缓冲区首采样位置，传递给宿主用于音视频/MIDI对齐。
+
+- 旧接口：宿主调用`ASIOGetSamplePosition()`获取时间信息
+
+- 新接口：`bufferSwitchTimeInfo`回调直接携带`ASIOTime`时间结构体，推荐优先使用
+
+### 示例时序（缓冲区1024采样，44100Hz，启动系统时间2000ms）
+
+|回调序号|BufferIndex|SystemTime\(ms\)|SamplePosition|
+|---|---|---|---|
+|0|0|2000|0|
+|1|1|2000|1024|
+|2|0|2023|2048|
+|3|1|2046|3072|
+|4|0|2069|4096|
+|5|1|2092|5120|
+|6|0|2116|6144|
+
+> 说明：前两次回调硬件未开始，系统时间相同；前3次回调时间戳不稳定，宿主需忽略，稳定流同步从第3次回调后生效。系统时间戳为操作系统基准时钟，不同平台实现见附录D。
+
+## 7\. Driver Notifications to the Host Application 驱动通知宿主事件
+
+所有事件通过`asioMessage`回调推送，宿主需延后处理，禁止在回调内卸载驱动：
+
+|消息标识|事件含义|
+|---|---|
+|kAsioResetRequest|驱动需要重置（采样率变更、面板参数修改等异常）|
+|kAsioBufferSizeChange|用户修改缓冲区尺寸（多数宿主不支持，推荐改用重置请求）|
+|kAsioResyncRequest|检测到音频欠载，请求重新同步时间线|
+|kAsioLatenciesChanged|输入/输出延迟发生变化|
+|kAsioOverload|音频过载、出现丢帧爆音，宿主可弹窗提醒用户|
+
+独立回调：`sampleRateDidChange()`，外接时钟采样率变动时通知宿主。
+
+---
+
+# III\. Function Reference API函数参考
+
+## 1\. Initialization/Termination 初始化/销毁
+
+### `ASIOError ASIOInit(ASIODriverInfo *info);`
+
+功能：初始化ASIO音频流
+参数：`ASIODriverInfo`结构体指针
+返回错误码：
+
+- `ASE_NotPresent`：无可用输入/输出硬件
+
+- `ASE_NoMemory`：内存不足
+
+- `ASE_HWMalfunction`：硬件故障
+
+```C
+struct ASIODriverInfo {
+    long asioVersion;    // 入参：宿主ASIO版本；出参：驱动实现版本
+    long driverVersion;  // 出参：驱动自定义版本号
+    char name[32];       // 出参：驱动名称字符串
+    char errorMessage[124]; // 出参：初始化失败错误描述
+    void *sysRef;        // 入参：系统句柄（Windows为主窗口句柄）
+};
+```
+
+### `ASIOError ASIOExit(void);`
+
+功能：终止ASIO，自动执行`ASIOStop`\+`ASIODisposeBuffers`；调用后禁止访问宿主任何回调函数。
+
+## 2\. Start/Stop 启停音频流
+
+### `ASIOError ASIOStart(void);`
+
+功能：同步启动输入输出硬件，重置采样计数器为0；首次回调索引0，宿主读取输入缓冲A、填充输出缓冲A，缓冲B提前预播放。
+返回：`ASE_NotPresent`无硬件、`ASE_HWMalfunction`硬件启动失败。
+
+### `ASIOError ASIOStop(void);`
+
+功能：完全停止音频流；函数返回后驱动不得再触发`bufferSwitch`回调，需清理所有待处理中断事件。
+
+## 3\. Inquiry methods and sample rate 查询与采样率接口
+
+### `ASIOGetChannels(long *numInputChannels, long *numOutputChannels);`
+
+返回硬件输入、输出通道总数；仅单路硬件存在时另一参数置0，返回`ASE_OK`。
+
+### `ASIOGetLatencies(long *inputLatency, long *outputLatency);`
+
+返回输入、输出总延迟（采样数），包含硬件FIFO、缓冲区排队延迟。
+
+- 输入延迟：缓冲区回调读取时，输入采样已存在的时长
+
+- 输出延迟：缓冲区提交后，采样实际发声的间隔
+
+> 最小延迟优化方案：避免驱动拷贝缓冲区，由驱动直接持有DMA内存；搭配`ASIOOutputReady`可减少一整块延迟。
+
+### `ASIOGetBufferSize(long *minSize, long *maxSize, long *preferredSize, long *granularity);`
+
+获取缓冲区尺寸范围：
+
+- minSize：最小缓冲采样数
+
+- maxSize：最大缓冲采样数
+
+- preferredSize：硬件推荐最优尺寸
+
+- granularity：尺寸步进；\-1代表必须2的幂次，0代表尺寸固定不可修改
+
+### `ASIOCanSampleRate(ASIOSampleRate sampleRate);`
+
+判断硬件是否支持指定采样率；不支持返回`ASE_NoClock`。
+
+### `ASIOGetSampleRate(ASIOSampleRate *currentRate);`
+
+读取当前生效采样率；无时钟返回0\+`ASE_NoClock`。
+
+### `ASIOSetSampleRate(ASIOSampleRate sampleRate);`
+
+设置内部时钟采样率；传0启用外部同步；外接时钟时传入非0值返回`ASE_InvalidMode`。
+
+### `ASIOGetClockSources(ASIOClockSource *clocks, long *numSources);`
+
+读取硬件全部时钟源（至少内置时钟1个）。
+
+```C
+struct ASIOClockSource {
+    long index;
+    long associatedChannel;  // 关联输入通道，无时钟通道填-1
+    long associatedGroup;    // 通道分组（模拟/SPDIF/ADAT等）
+    ASIOBool isCurrentSource; // 是否为当前启用时钟
+    char name[32];           // 时钟源显示名称
+};
+```
+
+### `ASIOSetClockSource(long index);`
+
+切换时钟源；切换导致采样率变化时调用`sampleRateDidChange`回调。
+
+### `ASIOGetSamplePosition (ASIOSamples *sPos, ASIOTimeStamp *tStamp);`
+
+读取当前采样位置与对应系统时间戳；流未运行返回`ASE_SPNotAdvancing`。
+要求：时间戳与采样位置严格对应当前缓冲区首采样，是音视频同步的核心接口。
+
+### `ASIOGetChannelInfo(ASIOChannelInfo *info);`
+
+读取单通道类型、分组、名称、激活状态。
+
+```C
+struct ASIOChannelInfo {
+    long channel;
+    ASIOBool isInput;        // true=输入通道，false=输出
+    ASIOBool isActive;       // 是否已启用分配缓冲
+    long channelGroup;       // 通道分组（模拟/数字接口区分）
+    ASIOSampleType type;     // 采样数据格式
+    char name[32];           // 通道显示名称
+};
+```
+
+## 4\. Buffer preparation 缓冲区管理
+
+### `ASIOCreateBuffers(ASIOBufferInfo *bufferInfos, long numChannels, long bufferSize, ASIOCallbacks *callbacks);`
+
+分配所有启用通道的双缓冲区内存，绑定宿主回调函数。
+
+```C
+struct ASIOBufferInfo {
+    ASIOBool isInput;
+    long channelNum;
+    void *buffers[2]; // 双缓冲两块内存指针
+};
+```
+
+返回错误：`ASE_NoMemory`内存不足、`ASE_InvalidMode`缓冲区尺寸不支持。
+
+### `ASIODisposeBuffers(void);`
+
+释放所有音频缓冲区与通道硬件资源；未创建缓冲调用返回`ASE_InvalidMode`。
+
+### `ASIOOutputReady(void);`
+
+宿主完成输出数据处理后调用，驱动可直接将数据写入DMA缓存，减少输出延迟；不支持该机制返回`ASE_NotPresent`。
+
+## 5\. Miscellaneous 杂项接口
+
+### `ASIOControlPanel(void);`
+
+打开驱动控制面板，供用户修改硬件参数；无面板返回`ASE_NotPresent`。
+
+### `ASIOFuture(long selector, void *params);`
+
+扩展功能统一入口，不同selector对应不同扩展能力：
+
+1. `kAsioEnableTimeCodeRead` / `kAsioDisableTimeCodeRead`：启用/关闭硬件时间码读取
+
+2. `kAsioSetInputMonitor`：设置硬件直监路由、增益、声像
+
+```C
+struct ASIOInputMonitor {
+    long input;    // 监听输入通道，-1=全部
+    long output;   // 监听输出通道（立体声偶数通道）
+    long gain;     // 增益0~0x7fffffff，0x20000000=0dB
+    long pan;      // 声像0=左，0x7fffffff=右
+    ASIOBool state;// true开启监听
+};
+```
+
+3. `kAsioSetIoFormat` / `kAsioGetIoFormat` / `kAsioCanDoIoFormat`：切换PCM/DSD音频格式
+
+4. `kAsioCanReportOverload`：查询驱动过载上报能力
+
+5. `kAsioGetInternalBufferSamples`：读取驱动内部缓冲大小
+
+```C
+struct ASIOInternalBufferInfo {
+    long inputSamples;  // 驱动内部输入缓冲采样数
+    long outputSamples; // 驱动内部输出缓冲采样数
+};
+```
+
+## 6\. Callbacks 宿主回调函数
+
+### `void (*bufferSwitch) (long doubleBufferIndex, ASIOBool directProcess);`
+
+基础缓冲区回调，硬件需要新音频数据时触发：
+
+- doubleBufferIndex：当前待填充输出缓冲0/1
+
+- directProcess：true=允许立刻处理；false=中断层级过低，需延后处理
+
+### `ASIOTime* (*bufferSwitchTimeInfo) (ASIOTime* params, long doubleBufferIndex, ASIOBool directProcess);`
+
+增强版回调，携带完整时间同步信息，推荐优先使用。
+
+```C
+struct ASIOTime {
+    long reserved[4]; // 必须置0
+    AsioTimeInfo timeInfo; // 基础时间信息（必填）
+    ASIOTimeCode timeCode; // 时间码（可选）
+};
+struct AsioTimeInfo {
+    double speed;                // 播放速度，1.0=正常
+    ASIOTimeStamp systemTime;    // 系统纳秒时间戳
+    ASIOSamples samplePosition;  // 累计采样位置
+    ASIOSampleRate sampleRate;   // 当前采样率
+    unsigned long flags;         // 有效字段标记
+    char reserved[12];
+};
+// AsioTimeInfo Flags
+#define kSystemTimeValid    0x01
+#define kSamplePositionValid 0x02
+#define kSampleRateValid    0x04
+#define kSpeedValid         0x08
+#define kSampleRateChanged  0x10
+#define kClockSourceChanged 0x20
+
+struct ASIOTimeCode {
+    double speed;
+    ASIOSamples timeCodeSamples;
+    unsigned long flags;
+    char future[64];
+};
+// TimeCode Flags
+#define kTcValid     0x01
+#define kTcRunning   0x02
+#define kTcReverse   0x04
+#define kTcOnspeed   0x08
+#define kTcStill     0x10
+#define kTcSpeedValid 0x20
+```
+
+### `void (*sampleRateDidChange) (ASIOSampleRate sRate);`
+
+外接时钟采样率变动通知，sRate=0代表时钟丢失。
+
+### `long (*asioMessage) (long selector, long value, void* message, double* opt);`
+
+通用事件通知回调，selector区分消息类型，返回值由消息类型定义。
+
+## 7\. Type definitions 全局数据类型定义
+
+### 采样格式（大小端区分）
+
+#### 大端Big Endian（PowerPC/macOS旧架构）
+
+- `ASIOSTInt16MSB` 16位整型
+
+- `ASIOSTInt24MSB` 打包24位
+
+- `ASIOSTInt32MSB` 32位整型（24位左对齐）
+
+- `ASIOSTFloat32MSB` 32位浮点
+
+- `ASIOSTFloat64MSB` 64位浮点
+
+- `ASIOSTInt32MSB16/18/20/24` 32位容器右对齐低位采样
+
+#### 小端Little Endian（x86 Windows）
+
+- `ASIOSTInt16LSB` 16位整型
+
+- `ASIOSTInt24LSB` 打包24位
+
+- `ASIOSTInt32LSB` 32位整型
+
+- `ASIOSTFloat32LSB` IEEE32浮点
+
+- `ASIOSTFloat64LSB` IEEE64浮点
+
+- `ASIOSTInt32LSB16/18/20/24` 32位容器低位采样右对齐
+
+#### DSD无损格式
+
+- `ASIOSTDSDInt8LSB1` 1bit DSD，字节最低位为首个采样
+
+- `ASIOSTDSDInt8MSB1` 1bit DSD，字节最高位为首个采样
+
+- `ASIOSTDSDInt8NER8` 8bit DSD，无大小端区分
+
+### 基础数值类型
+
+- `ASIOSamples`：64位无符号整型，存储采样总数
+
+- `ASIOTimeStamp`：64位纳秒时间戳，拆分为高低32位结构体存储
+
+- `ASIOSampleRate`：double浮点，存储采样率（44100\.0、48000\.0、2822400\.0等）
+
+- `ASIOBool`：布尔类型，`ASIOTrue=1`，`ASIOFalse=0`
+
+### 标准错误码
+
+|错误码|含义|
+|---|---|
+|ASE\_OK|接口执行成功|
+|ASE\_SUCCESS|ASIOFuture扩展接口成功|
+|ASE\_NotPresent|硬件/功能不存在|
+|ASE\_HWMalfunction|硬件故障|
+|ASE\_InvalidParameter|参数非法|
+|ASE\_InvalidMode|当前状态不允许该操作|
+|ASE\_SPNotAdvancing|音频流未运行，采样位置不更新|
+|ASE\_NoClock|无有效时钟/采样率无法读取|
+|ASE\_NoMemory|内存分配失败|
+
+---
+
+# IV\. Host Utility API Reference 宿主工具类API
+
+## 1\. AsioDrivers Class 驱动管理类
+
+统一管理全平台驱动枚举、加载、卸载，同一时间仅支持一个驱动实例。
+
+### 类方法
+
+- `AsioDrivers()` / `~AsioDrivers()`：构造/析构，自动释放驱动
+
+- `bool loadDriver(char *name);`：加载指定名称驱动，返回加载结果
+
+- `long getDriverNames(char **names, long maxDrivers);`：读取本机全部ASIO驱动名称，返回驱动总数
+
+- `bool getCurrentDriverName(char *name);`：获取当前已加载驱动名
+
+- `long getCurrentDriverIndex();`：获取当前驱动在名称列表中的索引，无驱动返回\-1
+
+- `void removeCurrentDriver();`：从内存卸载当前驱动
+
+---
+
+# V\. Appendix 附录
+
+## A\. Using the bufferSwitchTimeInfo\(\) callback 带时间戳回调使用示例
+
+推荐优先使用`bufferSwitchTimeInfo`，省去频繁调用`ASIOGetSamplePosition`，时序信息统一可靠。
+
+```C
+ASIOTime asioTime;
+bool timeInfoMode = false;
+bool canTimeCode = false;
+
+void createBuffers(ASIOCallbacks* callbacks) {
+    memset(&asioTime, 0, sizeof(ASIOTime));
+    AsioTimeInfo* ti = &asioTime.timeInfo;
+    ti->sampleRate = 44100.0;
+    ASIOTimeCode* tc = &asioTime.timeCode;
+    tc->speed = 1.0;
+
+    // 询问宿主是否支持时间戳回调
+    if(callbacks->asioMessage(kAsioSupportsTimeInfo, 0, 0, 0) == 1) {
+        timeInfoMode = true;
+        // 询问是否支持时间码
+        if(callbacks->asioMessage(kAsioSupportsTimeCode, 0, 0, 0) == 1)
+            canTimeCode = true;
+    }
+}
+
+void switchBuffers(long doubleBufferIndex, bool processNow) {
+    if(timeInfoMode) {
+        AsioTimeInfo* ti = &asioTime.timeInfo;
+        ti->flags = kSystemTimeValid | kSamplePositionValid | kSampleRateValid;
+        ti->systemTime = 当前纳秒时间;
+        ti->samplePosition = 当前采样计数;
+
+        // 填充时间码信息
+        if(canTimeCode && timeCodeEnabled) {
+            ASIOTimeCode* tc = &asioTime.timeCode;
+            tc->timeCodeSamples = tcSamples;
+            tc->flags = kTcValid | kTcRunning;
+        }
+        callbacks->bufferSwitchTimeInfo(&asioTime, doubleBufferIndex, processNow ? ASIOTrue : ASIOFalse);
+    } else {
+        callbacks->bufferSwitch(doubleBufferIndex, ASIOFalse);
+    }
+}
+
+// 时间码开关扩展接口
+ASIOError ASIOFuture(long selector, void *params) {
+    switch(selector) {
+        case kAsioEnableTimeCodeRead: timeCodeEnabled = true; return ASE_SUCCESS;
+        case kAsioDisableTimeCodeRead: timeCodeEnabled = false; return ASE_SUCCESS;
+    }
+    return ASE_NotPresent;
+}
+```
+
+## B\. Latency vs\. Sample Placement 延迟与采样位置计算
+
+### 延迟计算公式
+
+输出总延迟 = 排队缓冲区数量 × 单缓冲采样数 \+ DAC硬件固定延迟
+输入总延迟 = 排队缓冲区数量 × 单缓冲采样数 \+ ADC硬件固定延迟
+
+### 对齐逻辑
+
+宿主需要提前输出音频数据抵消输出延迟；录制时根据输入延迟偏移录音波形，保证输入输出时间对齐。
+例：输出延迟230采样、输入延迟239采样，流位置256的输入采样，实际发声位置为495，宿主根据延迟偏移修正波形时间轴。
+
+## C\. Test methods 驱动标准测试方案
+
+1. **输入输出回录对齐测试**
+硬件输出跳线回输入，在工程插入单脉冲信号，录制后脉冲波形需与原信号偏差±1ms内，否则延迟计算错误。
+
+2. **音频/MIDI同步测试**
+同时录制音频节拍器与MIDI音源输出，允许偏差≤5ms；偏差为缓冲区整数倍则延迟接口实现异常。
+
+3. **MIDI时序稳定性测试**
+MIDI音符与音频节拍器偏差需控制在±2ms以内，超时差检查`ASIOGetSamplePosition`时间戳精度。
+
+4. **音MIDI漂移测试**
+长时间播放录音，MIDI与音频不能随播放逐渐偏移，漂移代表时间戳递增逻辑错误。
+
+## D\. Platform/OS Differences 跨平台系统差异
+
+1. **macOS 8/9**：ASIO 2\.3已停止支持该系统
+
+2. **Windows平台规范**
+
+    - `bufferSwitch`运行在驱动独立高优先级线程，Vista及以上必须使用MMCSS「Pro Audio」CRITICAL最高优先级；宿主不得修改线程优先级。
+
+    - 系统负载高时建议缓冲≥50ms（48kHz下2048采样），避免音频爆音。
+
+    - 禁止在音频线程调用Win16子系统（GDI、窗口动画），会造成线程阻塞长达1\.5秒。
+
+    - 系统时间基准：`timeGetTime()`，精度1ms。
+
+    - Windows全版本支持`asioMessage`回调；旧版Mac Cubase VST 3\.0无此回调。
+
+## E\. AsioDriver C\+\+基类（驱动开发模板）
+
+```C++
+class AsioDriver {
+public:
+    AsioDriver();
+    ~AsioDriver();
+    ASIOBool init(void *sysRef);
+    void getDriverName(char *name);
+    long getDriverVersion();
+    void getErrorMessage(char *string);
+    ASIOError start();
+    ASIOError stop();
+    ASIOError getChannels(long *numInputChannels, long *numOutputChannels);
+    ASIOError getLatencies(long *inputLatency, long *outputLatency);
+    ASIOError getBufferSize(long *minSize, long *maxSize, long *preferredSize, long *granularity);
+    ASIOError canSampleRate(ASIOSampleRate sampleRate);
+    ASIOError getSampleRate(ASIOSampleRate *sampleRate);
+    ASIOError setSampleRate(ASIOSampleRate sampleRate);
+    ASIOError getClockSources(ASIOClockSource *clocks, long *numSources);
+    ASIOError setClockSource(long reference);
+    ASIOError getSamplePosition(ASIOSamples *sPos, ASIOTimeStamp *tStamp);
+    ASIOError getChannelInfo(ASIOChannelInfo *info);
+    ASIOError createBuffers(ASIOBufferInfo *bufferInfos, long numChannels, long bufferSize, ASIOCallbacks *callbacks);
+    ASIOError disposeBuffers();
+    ASIOError controlPanel();
+    ASIOError future(long selector,void *opt);
+    ASIOError outputReady();
+};
+```
+
+说明：C\+\+接口是C接口面向对象封装；`init`接收Windows窗口句柄，析构自动执行`ASIOExit`。
+
+## F\. Sony DSD Support DSD音频格式支持
+
+1. DSD标准采样率：64Fs = 2\.8224MHz，直接以double数值传入ASIO采样率接口。
+
+2. DSD为1bit单比特采样，内存存储必须8采样对齐（1字节存8个1bit采样）。
+
+3. 大小端存储规则：
+
+    - x86小端：首个采样存储在字节最低位
+
+    - PowerPC大端：首个采样存储在字节最高位
+
+4. 格式切换限制：必须在PREPARED就绪状态之前调用`kAsioSetIoFormat`，缓冲分配后无法切换PCM/DSD。
+
+## G\. Microsoft Windows 64\-bit 64位系统兼容
+
+1. 驱动必须同时提供32位、64位COM二进制文件，适配32/64位宿主DAW。
+
+2. 注册表路径区分：
+
+    - 64位驱动：`HKEY_LOCAL_MACHINE\Software\ASIO`
+
+    - 32位驱动（WOW64）：`HKEY_LOCAL_MACHINE\Software\Wow6432Node\ASIO`
+
+3. 32/64位驱动可共用同一个CLSID，系统自动根据进程位数读取对应注册表节点。
+
+> （注：部分内容可能由 AI 生成）
