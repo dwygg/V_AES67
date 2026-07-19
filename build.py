@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """AES67 项目统一构建脚本 — 从 Git Bash 直接调，不依赖用户双击"""
-import subprocess, sys, os
+import subprocess, sys, os, re, datetime
 # 强制终端输出 UTF-8，避免 GBK 乱码
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -50,9 +50,40 @@ def build_driver():
         f'msbuild {DRIVER_PROJ} /p:Configuration=Win10 /p:Platform=x64 /t:Build'
     ])
 
+def _fix_driverver_utc():
+    """把输出目录 INF 的 DriverVer 日期强制改成 UTC 安全日期(UTC 前一天).
+
+    背景: msbuild 的 StampInf 任务会把输出 INF 的 DriverVer 日期改成编译当天
+    的本地日期. 跨时区时(如北京已 7/20 凌晨但 UTC 仍 7/19), 会打成 07/20/2026,
+    随后 inf2cat 按 UTC 判定该日期"在未来"而拒绝生成 .cat.
+    这里直接把输出 INF 的 DriverVer 日期覆盖成 UTC 前一天, 任何时区/任何时刻
+    编译都不会超前于当前 UTC, 纯字符串替换不依赖 WDK 内部机制, 绝对可控.
+    """
+    inf_path = f'{DRIVER_OUT}\\AES67Driver.inf'
+    if not os.path.exists(inf_path):
+        print(f"  WARN: 输出 INF 不存在, 跳过 DriverVer 修正: {inf_path}")
+        return
+    safe = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=1)
+    safe_str = safe.strftime('%m/%d/%Y')  # inf2cat 要求 MM/DD/YYYY
+    with open(inf_path, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+    # DriverVer = MM/DD/YYYY, x.x.x.x  ->  仅替换日期部分, 版本号保留
+    new_text, n = re.subn(
+        r'(DriverVer\s*=\s*)\d{2}/\d{2}/\d{4}',
+        lambda m: m.group(1) + safe_str,
+        text, count=1)
+    if n:
+        with open(inf_path, 'w', encoding='utf-8') as f:
+            f.write(new_text)
+        print(f"  DriverVer 日期已修正为 UTC 安全日期 {safe_str} (输出 INF)")
+    else:
+        print("  WARN: 未在输出 INF 中找到 DriverVer 行, 未修改")
+
 def sign_driver():
     inf2cat = f'{WDK_BIN}\\x86\\inf2cat.exe'
     signtool = f'{WDK_BIN}\\x64\\signtool.exe'
+    # 先把输出 INF 的 DriverVer 日期改成 UTC 安全日期, 再跑 inf2cat
+    _fix_driverver_utc()
     run_cmd("Signing Driver INF", [
         f'cd /d "{DRIVER_OUT}"',
         f'"{inf2cat}" /driver:. /os:10_19H1_X64',
