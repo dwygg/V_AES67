@@ -31,7 +31,7 @@ struct IASIO:IUnknown{
     virtual ASIOError future(long,void*)=0;virtual ASIOError outputReady()=0;
 };
 
-static constexpr long kNumIn=2,kNumOut=2,kBufSize=64;
+static constexpr long kNumIn=2,kNumOut=2,kBufSize=48;  // 48 = 1 AES67 packet (1ms @ 48kHz)
 static constexpr double kSampleRate=48000.0;
 static std::atomic<bool> g_running{false};
 static HANDLE g_hAudio=nullptr,g_hTx=nullptr,g_hRx=nullptr,g_hStop=nullptr;
@@ -58,13 +58,23 @@ static void RTP_Hdr(BYTE*p,uint16_t s,uint32_t t,uint32_t ss){p[0]=0x80;p[1]=0x6
 // --- Threads ---
 static DWORD WINAPI TxThread(LPVOID){BYTE b[1500],z[288]={};while(g_running.load()){size_t a=(g_rbH-g_rbT)&RB_M,n=a<288?a:288,c=RB_N-g_rbT;if(n<=c)memcpy(b+12,g_rb+g_rbT,n);else{memcpy(b+12,g_rb+g_rbT,c);memcpy(b+12+c,g_rb,n-c);}g_rbT=(g_rbT+n)&RB_M;if(n<288)memcpy(b+12+n,z,288-n);uint16_t s=(uint16_t)g_rtpSeq.fetch_add(1);uint32_t t=g_rtpTs.fetch_add(48);RTP_Hdr(b,s,t,g_ssrc);sendto(g_sockTx,(char*)b,300,0,(sockaddr*)&g_mcast,sizeof(g_mcast));Sleep(1);}return 0;}
 static DWORD WINAPI RxThread(LPVOID){BYTE b[1500];while(g_running.load()){sockaddr_in f;int fl=sizeof(f);int n=recvfrom(g_sockRx,(char*)b,1500,0,(sockaddr*)&f,&fl);if(n==SOCKET_ERROR){if(!g_running.load())break;continue;}if(n<12||(b[0]>>6)!=2||(b[1]&0x7F)!=97)continue;int pl=n-12;if(pl<288)continue;uint16_t seq=((uint16_t)b[2]<<8)|b[3];if(!g_jb_sync){g_jb_r=seq;g_jb_sync=true;}int16_t a=(int16_t)(seq-g_jb_r);if(a<0||a>=(int16_t)JB_S)continue;size_t i=seq&JB_M;g_jb_v[i]=true;g_jb_q[i]=seq;memcpy(g_jb_slots[i],b+12,JB_P);}return 0;}
-static DWORD WINAPI AudioThread(LPVOID){timeBeginPeriod(1);HANDLE t=CreateWaitableTimerExW(nullptr,nullptr,2,TIMER_ALL_ACCESS);if(!t)t=CreateWaitableTimerW(nullptr,FALSE,nullptr);LONGLONG ph=(LONGLONG)(64.0/48000.0*1e7);LARGE_INTEGER d;d.QuadPart=-ph;SetWaitableTimer(t,&d,0,nullptr,nullptr,FALSE);while(g_running.load()){HANDLE w[2]={t,g_hStop};if(WaitForMultipleObjects(2,w,FALSE,INFINITE)!=WAIT_OBJECT_0)break;long idx=g_doubleIdx;for(long ch=0;ch<kNumIn;ch++){if(!g_bi||!g_bi[ch].buffers[idx])continue;int32_t*dst=(int32_t*)g_bi[ch].buffers[idx];BYTE jb[288];for(long f=0;f<kBufSize;f+=48){uint16_t sr=g_jb_r;size_t si=sr&JB_M;if(g_jb_v[si]&&g_jb_q[si]==sr){memcpy(jb,g_jb_slots[si],JB_P);g_jb_v[si]=false;}else{memset(jb,0,JB_P);}g_jb_r=sr+1;for(long s=0;s<48&&(f+s)<kBufSize;s++){dst[(f+s)*kNumIn+ch]=jb[s*3]|(jb[s*3+1]<<8)|((int32_t)(int8_t)jb[s*3+2]<<16);}}}if(g_cb.bufferSwitch)g_cb.bufferSwitch(idx,ASIOFalse);for(long ch=0;ch<kNumOut;ch++){long bi=kNumIn+ch;if(!g_bi||!g_bi[bi].buffers[idx])continue;int32_t*src=(int32_t*)g_bi[bi].buffers[idx];BYTE pc[288];memset(pc,0,288);for(long f=0;f<kBufSize&&f<48;f++){int32_t v=src[f*kNumOut+ch];if(v>8388607)v=8388607;if(v<-8388608)v=-8388608;pc[f*3]=v&0xFF;pc[f*3+1]=(v>>8)&0xFF;pc[f*3+2]=(v>>16)&0xFF;}size_t u=(g_rbH-g_rbT)&RB_M,fr=RB_N-u-1,n=288<fr?288:fr,c=RB_N-g_rbH;if(n<=c)memcpy(g_rb+g_rbH,pc,n);else{memcpy(g_rb+g_rbH,pc,c);memcpy(g_rb,pc+c,n-c);}g_rbH=(g_rbH+n)&RB_M;}g_doubleIdx^=1;d.QuadPart=-ph;SetWaitableTimer(t,&d,0,nullptr,nullptr,FALSE);}CancelWaitableTimer(t);CloseHandle(t);timeEndPeriod(1);return 0;}
+static DWORD WINAPI AudioThread(LPVOID){timeBeginPeriod(1);HANDLE t=CreateWaitableTimerExW(nullptr,nullptr,2,TIMER_ALL_ACCESS);if(!t)t=CreateWaitableTimerW(nullptr,FALSE,nullptr);LONGLONG ph=(LONGLONG)((double)kBufSize/kSampleRate*1e7);LARGE_INTEGER d;d.QuadPart=-ph;SetWaitableTimer(t,&d,0,nullptr,nullptr,FALSE);while(g_running.load()){HANDLE w[2]={t,g_hStop};if(WaitForMultipleObjects(2,w,FALSE,INFINITE)!=WAIT_OBJECT_0)break;long idx=g_doubleIdx;
+// ---- RX: fill ASIO input buffers from jitter (L24→int32, per-channel non-interleaved) ----
+for(long ch=0;ch<kNumIn;ch++){if(!g_bi||!g_bi[ch].buffers[idx])continue;int32_t*dst=(int32_t*)g_bi[ch].buffers[idx];BYTE jb[288];if(g_jb_v[g_jb_r&JB_M]&&g_jb_q[g_jb_r&JB_M]==g_jb_r){memcpy(jb,g_jb_slots[g_jb_r&JB_M],JB_P);g_jb_v[g_jb_r&JB_M]=false;}else{memset(jb,0,JB_P);}g_jb_r++;for(long s=0;s<kBufSize;s++){dst[s]=jb[s*3]|(jb[s*3+1]<<8)|((int32_t)(int8_t)jb[s*3+2]<<16);}}
+// ---- Call DAW ----
+if(g_cb.bufferSwitch)g_cb.bufferSwitch(idx,ASIOFalse);
+// ---- TX: read ASIO output buffers → L24 → ring buffer (per-channel non-interleaved) ----
+BYTE pcm[288];memset(pcm,0,288);
+for(long ch=0;ch<kNumOut;ch++){long bi=kNumIn+ch;if(!g_bi||!g_bi[bi].buffers[idx])continue;int32_t*src=(int32_t*)g_bi[bi].buffers[idx];for(long s=0;s<kBufSize;s++){int32_t v=src[s];if(v>8388607)v=8388607;if(v<-8388608)v=-8388608;pcm[s*6+ch*3]=v&0xFF;pcm[s*6+ch*3+1]=(v>>8)&0xFF;pcm[s*6+ch*3+2]=(v>>16)&0xFF;}}
+// Write 288B (48 frames × 2ch × 3B L24) to TX ring
+size_t u=(g_rbH-g_rbT)&RB_M,fr=RB_N-u-1,n=288<fr?288:fr,c=RB_N-g_rbH;if(n<=c)memcpy(g_rb+g_rbH,pcm,n);else{memcpy(g_rb+g_rbH,pcm,c);memcpy(g_rb,pcm+c,n-c);}g_rbH=(g_rbH+n)&RB_M;
+g_doubleIdx^=1;d.QuadPart=-ph;SetWaitableTimer(t,&d,0,nullptr,nullptr,FALSE);}CancelWaitableTimer(t);CloseHandle(t);timeEndPeriod(1);return 0;}
 
 class AES67Asio:public IASIO{ULONG m_ref=1;
 public:
     STDMETHOD(QueryInterface)(REFIID riid,void**ppv)override{if(!ppv)return E_POINTER;if(riid==IID_IUnknown||riid==CLSID_AES67){*ppv=this;AddRef();return S_OK;}*ppv=nullptr;return E_NOINTERFACE;}
     STDMETHOD_(ULONG,AddRef)()override{return++m_ref;}
-    STDMETHOD_(ULONG,Release)()override{if(--m_ref==0){delete this;return 0;}return m_ref;}
+    STDMETHOD_(ULONG,Release)()override{return --m_ref;} // singleton — never delete
     ASIOBool init(void*)override{return ASIOTrue;}
     void getDriverName(char*n)override{strcpy_s(n,32,"AES67 Virtual ASIO");}
     long getDriverVersion()override{return 1;}
