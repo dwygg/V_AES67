@@ -17,6 +17,7 @@ Abstract:
 
 #include "aes67driver.h"
 #include "common.h"
+#include <ntddk.h>   // MmGetPhysicalAddress (see AES67DeviceControl below)
 
 //-----------------------------------------------------------------------------
 // Defines                                                                    
@@ -155,7 +156,15 @@ Returns:
 
 
 //=============================================================================
-#pragma code_seg("INIT")
+// FIX (P1): The custom IOCTL dispatch below is a RUNTIME callback — it is
+// registered into DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] and gets
+// invoked long after DriverEntry returns. It therefore MUST NOT live in the
+// "INIT" code segment: INIT is marked discardable (/SECTION:"INIT,d") and the
+// system frees it once DriverEntry completes. Executing a handler out of freed
+// INIT memory triggers ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY (bugcheck 0xFC)
+// on the first IOCTL. Keep it in the pageable "PAGE" segment instead — IOCTL
+// dispatch runs at PASSIVE_LEVEL and this handler touches nothing non-pageable.
+#pragma code_seg("PAGE")
 // ---- 自定义 IOCTL 分发 ----
 //
 // TODO(P9): 这是"内核↔用户态主动脉"的骨架，目前还是空壳：
@@ -177,7 +186,16 @@ typedef struct _AES67_BUFFER_INFO {
     ULONG   SampleRate;         // 采样率
 } AES67_BUFFER_INFO;
 
+// TODO(P9): this hooks the GLOBAL IRP_MJ_DEVICE_CONTROL, so it also intercepts
+//   PortCls/audio-stack IOCTLs before forwarding to g_PortClsDeviceControl.
+//   Most audio IOCTLs come in at PASSIVE_LEVEL, but if any arrives at
+//   DISPATCH_LEVEL a pageable handler could fault at high IRQL (bugcheck 0xA).
+//   If a non-0xFC bugcheck shows up after this fix, drop PAGED_CODE() and move
+//   this routine to a non-paged segment. The proper P9 fix is to stop hooking
+//   the global dispatch entry and expose the IOCTL via a dedicated interface.
 static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
+    PAGED_CODE();   // IOCTL dispatch runs at PASSIVE_LEVEL; handler is pageable.
+
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
     ULONG code = stack->Parameters.DeviceIoControl.IoControlCode;
 
@@ -208,6 +226,8 @@ static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     return g_PortClsDeviceControl(DeviceObject, Irp);
 }
 
+// DriverEntry runs exactly once and may stay in the discardable INIT segment.
+#pragma code_seg("INIT")
 extern "C" DRIVER_INITIALIZE DriverEntry;
 extern "C" NTSTATUS DriverEntry(
     IN  PDRIVER_OBJECT          DriverObject,
