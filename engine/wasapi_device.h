@@ -55,10 +55,14 @@ private:
 };
 
 // ---- Find device by substring match in friendly name ----
+// stateMask defaults to ACTIVE|UNPLUGGED: a virtual soundcard endpoint (no
+// physical jack) is frequently reported as UNPLUGGED/NOTPRESENT rather than
+// ACTIVE, so restricting to DEVICE_STATE_ACTIVE alone silently misses it.
 ComPtr<IMMDevice> FindAudioDevice(
     IMMDeviceEnumerator* enumerator,
     EDataFlow flow,
-    const wchar_t* nameSubstring);
+    const wchar_t* nameSubstring,
+    DWORD stateMask = DEVICE_STATE_ACTIVE | DEVICE_STATE_UNPLUGGED | DEVICE_STATE_NOTPRESENT);
 
 // ---- Diagnostic: log every ACTIVE render endpoint's friendly name ----
 // Used when the AES67Driver endpoint cannot be found, so the user can see what

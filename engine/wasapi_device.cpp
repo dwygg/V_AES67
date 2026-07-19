@@ -23,10 +23,11 @@ std::string WideToNarrow(const wchar_t* w) {
 ComPtr<IMMDevice> FindAudioDevice(
     IMMDeviceEnumerator* enumerator,
     EDataFlow flow,
-    const wchar_t* nameSubstring)
+    const wchar_t* nameSubstring,
+    DWORD stateMask)
 {
     IMMDeviceCollection* coll = nullptr;
-    if (FAILED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &coll)))
+    if (FAILED(enumerator->EnumAudioEndpoints(flow, stateMask, &coll)))
         return ComPtr<IMMDevice>();
 
     UINT count = 0;
@@ -43,7 +44,20 @@ ComPtr<IMMDevice> FindAudioDevice(
             PropVariantInit(&var);
             if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var))) {
                 if (var.pwszVal && wcsstr(var.pwszVal, nameSubstring)) {
-                    Logger::Instance().Info("Found device: %s", WideToNarrow(var.pwszVal).c_str());
+                    DWORD state = 0;
+                    dev->GetState(&state);
+                    const char* stateStr =
+                        (state == DEVICE_STATE_ACTIVE)     ? "ACTIVE" :
+                        (state == DEVICE_STATE_DISABLED)   ? "DISABLED" :
+                        (state == DEVICE_STATE_NOTPRESENT) ? "NOTPRESENT" :
+                        (state == DEVICE_STATE_UNPLUGGED)  ? "UNPLUGGED" : "?";
+                    Logger::Instance().Info("Found device: %s [state=%s]",
+                        WideToNarrow(var.pwszVal).c_str(), stateStr);
+                    if (state != DEVICE_STATE_ACTIVE) {
+                        Logger::Instance().Warn(
+                            "  endpoint not ACTIVE (%s) - virtual soundcard w/o jack; "
+                            "attempting to use it anyway.", stateStr);
+                    }
                     PropVariantClear(&var);
                     props->Release();
                     result.Reset(dev);
