@@ -115,12 +115,14 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
                 m_ptpClock.GetOffsetNs());
             return buf;
         }
-        // NOTE: this handler runs on the pipe thread.
-        // START/PAUSE/RESUME don't join the pipe thread, so they're safe to call here.
-        // STOP is special: Stop() used to join the pipe thread -> self-deadlock (M9-1).
-        // We now defer STOP to the engine's own loop via an atomic flag.
-        if (cmd == "START") { Start(); return "OK"; }
-        if (cmd == "STOP")  { SignalStopAudio(); return "OK"; }
+        // NOTE: this handler runs on the pipe thread and MUST return quickly.
+        // Anything that can block (Start() brings up WASAPI+PTP; Stop() joins
+        // threads) is deferred to the engine's own loop via an atomic flag —
+        // otherwise the single-instance pipe has no listener during that window,
+        // causing the panel's periodic STATUS to fail with ERROR_ACCESS_DENIED(5)
+        // or, if it blocks long enough, hanging the whole pipe service.
+        if (cmd == "START") { SignalStartAudio(); return "OK"; }
+        if (cmd == "STOP")  { SignalStopAudio();  return "OK"; }
         if (cmd == "PAUSE") { Pause(); return "OK"; }
         if (cmd == "RESUME"){ Resume();return "OK"; }
         // M9-3/M9-4 (P2): SET updates m_netConfig, then flags a reconfig so the
@@ -369,6 +371,17 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         if (m_stopRequested.load(std::memory_order_acquire)) {
             Logger::Instance().Info("Exit requested");
             break;
+        }
+
+        // P2 fix: deferred START from the pipe thread — executed here on the
+        // engine thread so the (possibly blocking) Start() never stalls the pipe.
+        if (m_startAudioRequested.exchange(false, std::memory_order_acq_rel)) {
+            if (m_state == EngineState::Initialized || m_state == EngineState::Stopped) {
+                Logger::Instance().Info("Audio start requested (pipe) — starting stream");
+                // Restarting the audio thread resets duration accounting so a
+                // panel-driven start doesn't inherit stale elapsed time.
+                if (Start()) tickStart = GetTickCount();
+            }
         }
 
         // M9-1 (P2): deferred STOP from the pipe thread — executed here on the

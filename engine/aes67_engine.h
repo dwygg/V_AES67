@@ -84,6 +84,14 @@ public:
     // sets this flag and the engine's own thread (RunBlocking loop) performs Stop().
     void SignalStopAudio() { m_stopAudioRequested.store(true, std::memory_order_release); }
 
+    // P2 fix: START must NOT run on the pipe thread either. Start() brings up the
+    // WASAPI audio thread + PTP, which can block for tens~hundreds of ms. If done
+    // on the pipe thread, the single-instance pipe has no listener during that
+    // window -> the panel's periodic STATUS hits it as ERROR_ACCESS_DENIED(5), and
+    // if Start() blocks longer the whole pipe service hangs ("engine stuck waiting").
+    // So the handler just sets this flag; the engine thread performs Start().
+    void SignalStartAudio() { m_startAudioRequested.store(true, std::memory_order_release); }
+
 private:
     EngineState              m_state = EngineState::Uninitialized;
     AudioConfig              m_config;
@@ -97,6 +105,7 @@ private:
     AudioThread              m_thread;
     AudioThreadStats         m_stats;
     std::atomic<bool>        m_stopRequested = false;        // EXIT: tear down process (leave RunBlocking loop)
+    std::atomic<bool>        m_startAudioRequested = false;  // P2: START audio, deferred to engine thread (Start() may block)
     std::atomic<bool>        m_stopAudioRequested = false;   // M9-1: STOP audio, keep process+pipe alive
     std::atomic<bool>        m_reconfigRequested = false;    // M9-3: SET changed net config -> rebuild sockets on engine thread
 
