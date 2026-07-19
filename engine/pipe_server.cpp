@@ -54,10 +54,19 @@ DWORD WINAPI PipeServer::ThreadProc(LPVOID param) {
 }
 
 void PipeServer::RunLoop() {
+    // A single reusable event for the async ConnectNamedPipe.
+    HANDLE hConnectEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
     while (m_running.load(std::memory_order_acquire)) {
+        // CRITICAL: the pipe MUST be created with FILE_FLAG_OVERLAPPED, otherwise
+        // ConnectNamedPipe below ignores the OVERLAPPED struct and blocks
+        // synchronously — which (a) makes m_stopEvent useless and (b) leaves a
+        // window between instances where a connecting client gets ACCESS_DENIED(5)
+        // or PIPE_BUSY. With overlapped I/O the instance is in a proper PENDING
+        // accept state the moment it exists, so clients never race.
         HANDLE hPipe = CreateNamedPipeW(
             kPipeName,
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
             4096, 4096, kTimeout, nullptr);
@@ -67,33 +76,82 @@ void PipeServer::RunLoop() {
             break;
         }
 
-        // Wait for client or stop
+        ResetEvent(hConnectEvent);
         OVERLAPPED ov = {};
-        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        BOOL connected = ConnectNamedPipe(hPipe, &ov);
+        ov.hEvent = hConnectEvent;
 
-        if (!connected && GetLastError() == ERROR_IO_PENDING) {
-            HANDLE waits[2] = { ov.hEvent, m_stopEvent };
+        BOOL connected = ConnectNamedPipe(hPipe, &ov);
+        DWORD err = connected ? ERROR_SUCCESS : GetLastError();
+
+        bool ready = false;
+        if (connected) {
+            // Rare: connected synchronously.
+            ready = true;
+        } else if (err == ERROR_PIPE_CONNECTED) {
+            // Client connected in the tiny gap between CreateNamedPipe and
+            // ConnectNamedPipe — this IS a successful connection.
+            ready = true;
+        } else if (err == ERROR_IO_PENDING) {
+            // Normal path: wait for a client OR a stop request.
+            HANDLE waits[2] = { hConnectEvent, m_stopEvent };
             DWORD r = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
-            if (r != WAIT_OBJECT_0) {
-                CloseHandle(ov.hEvent);
+            if (r == WAIT_OBJECT_0) {
+                ready = true;
+            } else {
+                // Stop requested: cancel the pending connect and exit.
+                CancelIoEx(hPipe, &ov);
                 CloseHandle(hPipe);
                 break;
             }
+        } else {
+            Logger::Instance().Error("ConnectNamedPipe failed: %lu", err);
+            CloseHandle(hPipe);
+            continue;
         }
-        CloseHandle(ov.hEvent);
 
-        HandleClient(hPipe);
-        DisconnectNamedPipe(hPipe);
+        if (ready) {
+            HandleClient(hPipe);
+            FlushFileBuffers(hPipe);
+            DisconnectNamedPipe(hPipe);
+        }
         CloseHandle(hPipe);
     }
+
+    if (hConnectEvent) CloseHandle(hConnectEvent);
+}
+
+// Helper: synchronous-style read/write on an OVERLAPPED pipe handle.
+// Because the pipe is created with FILE_FLAG_OVERLAPPED, plain ReadFile/WriteFile
+// return FALSE + ERROR_IO_PENDING; we must wait on the OVERLAPPED event and then
+// GetOverlappedResult. Returns true on success and fills *transferred.
+static bool OverlappedIo(HANDLE hPipe, bool isWrite, void* buf, DWORD len,
+                         DWORD* transferred) {
+    OVERLAPPED ov = {};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    BOOL ok = isWrite
+        ? WriteFile(hPipe, buf, len, nullptr, &ov)
+        : ReadFile(hPipe, buf, len, nullptr, &ov);
+
+    if (!ok && GetLastError() == ERROR_IO_PENDING) {
+        ok = GetOverlappedResult(hPipe, &ov, transferred, TRUE);
+    } else if (ok) {
+        // Completed synchronously — result is already available.
+        GetOverlappedResult(hPipe, &ov, transferred, FALSE);
+    }
+    DWORD savedErr = GetLastError();
+    if (ov.hEvent) CloseHandle(ov.hEvent);
+    SetLastError(savedErr);
+    return ok != FALSE;
 }
 
 void PipeServer::HandleClient(HANDLE hPipe) {
     char buf[4096] = {};
     DWORD bytesRead = 0;
 
-    if (!ReadFile(hPipe, buf, sizeof(buf) - 1, &bytesRead, nullptr) || bytesRead == 0) return;
+    if (!OverlappedIo(hPipe, /*isWrite=*/false, buf, sizeof(buf) - 1, &bytesRead)
+        || bytesRead == 0) {
+        return;
+    }
     buf[bytesRead] = '\0';
 
     // Parse command and optional argument
@@ -104,5 +162,7 @@ void PipeServer::HandleClient(HANDLE hPipe) {
     response += '\n';
 
     DWORD written = 0;
-    WriteFile(hPipe, response.c_str(), (DWORD)response.size(), &written, nullptr);
+    OverlappedIo(hPipe, /*isWrite=*/true,
+                 const_cast<char*>(response.c_str()),
+                 (DWORD)response.size(), &written);
 }

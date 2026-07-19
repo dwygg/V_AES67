@@ -22,6 +22,12 @@ std::string PipeClient::SendCommand(const std::string& cmd) {
             WaitNamedPipeW(kPipeName, 100);
             continue;
         }
+        if (err == ERROR_ACCESS_DENIED) {
+            // Transient race: the server instance exists but is mid-teardown /
+            // not yet in a pending-accept state. A short backoff clears it.
+            Sleep(50);
+            continue;
+        }
         if (err == ERROR_FILE_NOT_FOUND) {
             // Server not up yet (or between instances) — brief backoff + retry.
             Sleep(50);
