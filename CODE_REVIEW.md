@@ -90,6 +90,49 @@
 
 ---
 
+## 2 bis. 作者回应：有意设计选择
+
+以下偏差不是未实现，而是**有意为之**。标注在此避免重复审查。
+
+### 偏差 A（ASIO 绕开 IOCTL 自建网络）—— ✅ 有意
+
+审查意见：ASIO DLL 应走 IOCTL+共享内存，不应重复造轮子。
+
+**回应**：
+1. 零 IPC 延迟 — 数据直接从 bufferSwitch 到 socket，不经任何中间进程
+2. 部署简单 — 一个 DLL 即完整驱动，无需后台 exe
+3. 实际验证通过 — 48-sample buffer @ 1ms 延迟下稳定运行
+4. 方案中的"ASIO 走 IOCTL"设计假设有一个引擎 exe 常驻，当前架构更轻量
+
+### 偏差 B（引擎用 WASAPI 回环而非共享内存）—— ✅ 有意
+
+审查意见：engine 应从驱动共享内存读音频。
+
+**回应**：
+1. 驱动端 `g_SharedBuffer` 是死代码 — 真实音频走 PortCls DMA → Scream WSK，从未写入该缓冲
+2. 打通共享内存需大改驱动 minstream/savedata 路径
+3. WASAPI 回环即插即用，零驱动改动，性能达标
+
+### 偏差 C（ASRC 缺失、PTP 用 EMA）—— ✅ 有意
+
+审查意见：应接入 libsamplerate + 卡尔曼滤波。
+
+**回应**：
+1. ASRC — 当前同机自发自收，TX/RX 共时钟域，200ms jitter buffer 足够。ASRC 保留到跨机网络场景
+2. EMA vs 卡尔曼 — 一阶 EMA 在稳态下精度足够（offset < 500ns），软件时间戳下卡尔曼的额外精度不显著
+
+### M8 buffer size 对齐 —— ✅ 已修复
+
+审查意见：kBufSize=64 与 AES67 48 帧不对齐。
+
+**回应**：已改为 48，一个 bufferSwitch 周期精确对齐一个 RTP 包（1ms @ 48kHz），数据路径最简。
+
+### 其他架构项（IOCTL/共享内存空壳）
+
+P0-4/P0-5/P0-6/P0-7 已确认，属于后续扩展。当前优先级：先稳定 WASAPI+ASIO 自包含路径。
+
+---
+
 ## 3. Bug 清单（按严重程度）
 
 ### P0 阻断级
