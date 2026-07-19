@@ -10,35 +10,41 @@ std::string PipeClient::SendCommand(const std::string& cmd) {
     // and there is a brief window between CreateNamedPipe calls where no instance
     // is available; without a retry a click could "do nothing". Try up to ~1s.
     HANDLE h = INVALID_HANDLE_VALUE;
+    DWORD lastErr = 0;
     for (int attempt = 0; attempt < 20; ++attempt) {
         h = CreateFileW(kPipeName,
             GENERIC_READ | GENERIC_WRITE,
             0, nullptr, OPEN_EXISTING, 0, nullptr);
         if (h != INVALID_HANDLE_VALUE) break;
 
-        DWORD err = GetLastError();
-        if (err == ERROR_PIPE_BUSY) {
+        lastErr = GetLastError();
+        if (lastErr == ERROR_PIPE_BUSY) {
             // Wait for an instance to become available, then retry.
             WaitNamedPipeW(kPipeName, 100);
             continue;
         }
-        if (err == ERROR_ACCESS_DENIED) {
+        if (lastErr == ERROR_ACCESS_DENIED) {
             // Transient race: the server instance exists but is mid-teardown /
             // not yet in a pending-accept state. A short backoff clears it.
             Sleep(50);
             continue;
         }
-        if (err == ERROR_FILE_NOT_FOUND) {
+        if (lastErr == ERROR_FILE_NOT_FOUND) {
             // Server not up yet (or between instances) — brief backoff + retry.
             Sleep(50);
             continue;
         }
         char buf[64];
-        snprintf(buf, sizeof(buf), "ERR CreateFile: %lu", err);
+        snprintf(buf, sizeof(buf), "ERR CreateFile: %lu", lastErr);
         return buf;  // other errors: report for display
     }
     if (h == INVALID_HANDLE_VALUE) {
-        return "";  // gave up: treat as disconnected
+        // Gave up after all retries. Do NOT swallow the reason — surface the last
+        // error code so we can see whether it's 2 (not found), 5 (access denied),
+        // 231 (all instances busy), etc. instead of a blank "Command failed:".
+        char buf[64];
+        snprintf(buf, sizeof(buf), "ERR connect: %lu (retries exhausted)", lastErr);
+        return buf;
     }
 
     // Ensure message-mode read so a single ReadFile returns the whole reply.

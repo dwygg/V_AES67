@@ -141,7 +141,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::refreshStatus() {
     std::string resp = m_pipe.SendCommand("STATUS");
-    if (resp.empty()) {
+    if (resp.empty() || resp.rfind("ERR", 0) == 0) {
         m_engineState->setText("● Disconnected");
         m_engineState->setStyleSheet("font-size: 16px; font-weight: bold; color: #c00;");
         m_btnStartStop->setText("Start");
@@ -150,7 +150,11 @@ void MainWindow::refreshStatus() {
         m_rxPkts->setText("--");
         m_jbDepth->setText("--");
         m_ptpState->setText("--");
-        statusBar()->showMessage("Cannot connect to engine");
+        // Surface the concrete failure reason (e.g. "ERR connect: 5 ...") instead
+        // of a generic message — this is exactly the diagnostic we need to see.
+        statusBar()->showMessage(resp.empty()
+            ? "Cannot connect to engine"
+            : QString::fromStdString(resp));
         return;
     }
 

@@ -87,6 +87,7 @@ void PipeServer::RunLoop() {
 
         BOOL connected = ConnectNamedPipe(hPipe, &ov);
         DWORD err = connected ? ERROR_SUCCESS : GetLastError();
+        Logger::Instance().Info("ConnectNamedPipe returned: connected=%d err=%lu", (int)connected, err);
 
         bool ready = false;
         if (connected) {
