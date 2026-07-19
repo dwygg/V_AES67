@@ -17,7 +17,6 @@ Abstract:
 
 #include "aes67driver.h"
 #include "common.h"
-#include <ntddk.h>   // MmGetPhysicalAddress (see AES67DeviceControl below)
 
 //-----------------------------------------------------------------------------
 // Defines                                                                    
@@ -204,7 +203,11 @@ static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
         } else {
             AES67_BUFFER_INFO info = {0};
-            info.PhysicalAddress = MmGetPhysicalAddress(g_SharedBuffer).QuadPart;
+            // TODO(P9): 真正实现共享内存通路后，把 g_SharedBuffer 的物理地址填进去
+            //   (MmGetPhysicalAddress(g_SharedBuffer).QuadPart)。当前 g_SharedBuffer
+            //   恒为 NULL(见 §共享内存 TODO(P9))，上面的 if 已保证走不到这里，
+            //   故此处留 0，避免为一个 P9 才生效的桩去引 ntddk.h 造成头文件冲突。
+            info.PhysicalAddress = 0;
             info.BufferSize = g_SharedBufferSize;
             info.Channels = 2;
             info.SampleRate = 48000;
