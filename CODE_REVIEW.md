@@ -23,8 +23,8 @@
 | `engine/pipe_server` + `panel/`（M9） | 🟢 骨架成型，方向对；有 2 真 bug | **当前重点** |
 | SAP / SDP 通告 | 🔴 地址 bug，接收方订阅不到 | **互通头号阻断** |
 | `asio/` | ⚠️ 自包含直连；早期 P0 已修 | 降级为可选客户端，非主线 |
-| `driver/` | 🟡 Scream 换皮；IOCTL/共享内存空壳 | 后置（P7/P8） |
-| 声道路由 / 混音 / DSP | ⚪ 未开始 | 产品核心价值，待做（P3-P6） |
+| `driver/` | 🟡 Scream 换皮 + 网络/ivshmem 残留；IOCTL/共享内存空壳 | 残留先清（P1）；共享内存后置（P8/P9） |
+| 声道路由 / 混音 / DSP | ⚪ 未开始 | 产品核心价值，待做（P4-P7） |
 
 ---
 
@@ -69,7 +69,7 @@ handler 里 `SET dest/source/port` 只改 `m_netConfig` 内存字段。但网络
 **改法**：锁死 L24 / 48kHz / 2ch / ptime=1ms 这一 profile。
 
 ### 🟡 组播地址两处不一致
-驱动侧 Scream 残留组播 `239.255.77.77` 与引擎 / ASIO 的 `239.69.1.128` 不一致——两个组件往不同地址发同一份音频，互相打架。驱动那套本就该在打通共享内存（P8）时一并清理。
+驱动侧 Scream 残留组播 `239.255.77.77` 与引擎 / ASIO 的 `239.69.1.128` 不一致——两个组件往不同地址发同一份音频，互相打架。驱动那套残留应在 **P1（清理驱动残留）** 阶段直接删除。
 
 ---
 
@@ -87,16 +87,14 @@ handler 里 `SET dest/source/port` 只改 `m_netConfig` 内存字段。但网络
 
 ---
 
-## 5. driver/ 现状（后置项，本轮非阻断）
+## 5. driver/ 现状（残留 P1 清理，共享内存 P9 实现）
 
-按 `开发计划.md`，驱动通路（IOCTL + 共享内存）是 **P7/P8 后置项**，此处仅记录现状，不作当前必修：
+现状记录如下。按 `开发计划.md`：**Scream/网络/ivshmem 残留在 P1 直接清掉**；死缓冲 / 空壳 IOCTL 在 P1 明确标注为「未实现占位」（去掉伪装），到 **P9** 才真正打通共享内存：
 
-- **IOCTL 码不匹配**：`ioctl_test.cpp` 用 `0x22E0000`，驱动 `CTL_CODE(FILE_DEVICE_UNKNOWN,0x800,METHOD_NEITHER)` 实际算出 `0x222003`，`DeviceIoControl` 必然失败。
-- **共享内存死缓冲**：`adapter.cpp` 里 `g_SharedBuffer` 只分配 + 清零，全文无写入音频代码；`SET_FORMAT`/`GET_POSITION` 空壳返回 SUCCESS。
-- **Scream 换皮残留**：池标签 `'DVSM'`（MSVD 反写）、作者 `Marco Martinelli`/`Tom Kistner`、INF Provider 仍是 `Tom Kistner`、DriverVer 停在 2007；内核里还跑着 WSK 组播 + ivshmem（违反「薄内核」）。
+- **Scream 换皮残留（P1 清）**：池标签 `'DVSM'`（MSVD 反写）、作者 `Marco Martinelli`/`Tom Kistner`、INF Provider 仍是 `Tom Kistner`、DriverVer 停在 2007；内核里还跑着 WSK 组播 + ivshmem（违反「薄内核」）——这些**直接删除**。
+- **IOCTL 码不匹配（P9 修）**：`ioctl_test.cpp` 用 `0x22E0000`，驱动 `CTL_CODE(FILE_DEVICE_UNKNOWN,0x800,METHOD_NEITHER)` 实际算出 `0x222003`，`DeviceIoControl` 必然失败。
+- **共享内存死缓冲（P1 标注占位 / P9 实现）**：`adapter.cpp` 里 `g_SharedBuffer` 只分配 + 清零，全文无写入音频代码；`SET_FORMAT`/`GET_POSITION` 空壳返回 SUCCESS。P1 先加 TODO 标注、不再伪装成可用通路；P9 落实写音频。
 - **格式范围失控**：声明 1-8ch/16-32bit/44.1-192k，需收敛到 AES67 profile。
-
-> 处理时机：走到 P8 打通共享内存时一并实现并清理；若长期先用 WASAPI 回环，则应**删除**这些死代码（WSK/ivshmem/`g_SharedBuffer`/`ioctl_test`/空壳 IOCTL），避免误导后来人以为「有个共享内存通路」。
 
 ---
 
@@ -104,17 +102,18 @@ handler 里 `SET dest/source/port` 只改 `m_netConfig` 内存字段。但网络
 
 | 级别 | 位置 | 问题 | 后果 | 阶段 |
 |---|---|---|---|---|
-| 🔴 | `aes67_engine.cpp:119,223` | M9-1 STOP 在 pipe 线程内 join 自身 | 面板卡 3s、响应丢失 | P1 |
-| 🔴 | `aes67_engine.cpp:158` | M9-2 pipe 绑音频 Start，鸡蛋悖论 | 未 Start 时面板连不上 | P1 |
-| 🔴 | `aes67_engine.cpp:178` | SAP 少传 mcastAddr，通告 SAP 组地址 | 第三方订阅不到流 | P2 |
-| 🟠 | `aes67_engine.cpp` SET handler | M9-3 SET 不重建 socket | 改地址不生效 | P1 |
-| 🟠 | `panel/mainwindow.cpp` | M9-4 Apply 漏发 source port | RX 配置改不动 | P1 |
-| 🟠 | `audio_config.h` periodUs | ptime=100ms ≠ AES67 1ms | 发流节拍不合规 | P2 |
-| 🟠 | `jitter_buffer.h` | 先置 valid 后 memcpy | 读到半包（撕裂） | P4 前 |
-| 🟠 | `ptp_clock.cpp:65` | drift 分母用绝对时长 | 运行越久越失真 | 跨机(P7) |
-| 🟡 | `build.py build_panel` | Qt 路径 / 生成器硬编码 | 换机构建失败 | P0/P1 |
+| 🔴 | `aes67_engine.cpp:119,223` | M9-1 STOP 在 pipe 线程内 join 自身 | 面板卡 3s、响应丢失 | P2 |
+| 🔴 | `aes67_engine.cpp:158` | M9-2 pipe 绑音频 Start，鸡蛋悖论 | 未 Start 时面板连不上 | P2 |
+| 🔴 | `aes67_engine.cpp:178` | SAP 少传 mcastAddr，通告 SAP 组地址 | 第三方订阅不到流 | P3 |
+| 🟠 | `aes67_engine.cpp` SET handler | M9-3 SET 不重建 socket | 改地址不生效 | P2 |
+| 🟠 | `panel/mainwindow.cpp` | M9-4 Apply 漏发 source port | RX 配置改不动 | P2 |
+| 🟠 | `audio_config.h` periodUs | ptime=100ms ≠ AES67 1ms | 发流节拍不合规 | P3 |
+| 🟠 | `jitter_buffer.h` | 先置 valid 后 memcpy | 读到半包（撕裂） | P5 |
+| 🟠 | `ptp_clock.cpp:65` | drift 分母用绝对时长 | 运行越久越失真 | 跨机(P8+) |
+| 🟡 | `driver/` 网络/ivshmem/换皮标识 | Scream 残留（WSK 组播 / ivshmem / 旧标识） | 内核跑网络栈、组播打架 | P1 |
 | 🟡 | `asio_minimal.cpp` | 声道 stride 硬编码 2ch | 改声道数越界 | 非主线 |
-| 🟡 | `driver/` 多处 | IOCTL 码/死缓冲/Scream 残留 | P8 再处理 | P8 |
+| 🟡 | `build.py build_panel` | Qt 路径 / 生成器硬编码 | 换机 / 换 Qt 版本需手改 | P6 |
+| 🟡 | `driver/` IOCTL/死缓冲 | IOCTL 码不匹配 / 共享内存空壳 | 通路不通（P1 标占位、P9 实现） | P9 |
 
 > 已修复不再列：ASIO 三个 P0（缓冲越界、48/64 错配、`delete this`）、裸 `size_t` 竞态、许可证（删 ASIOSDK + 补 GPLv3 LICENSE）、getBufferSize 锁死——分别在 `73a2f92`/`7a2a657`/`c5c4b5e` 已解决。
 
@@ -122,10 +121,11 @@ handler 里 `SET dest/source/port` 只改 `m_netConfig` 内存字段。但网络
 
 ## 7. 下一步（对应执行计划）
 
-按 `开发计划.md` 的 P1 → P2 推进：
+按 `开发计划.md` 推进（分支 `feature/dev-fix`）：
 
-1. **P1 修 M9-1/M9-2**（+ M9-3/M9-4）：让「常驻引擎 + 面板」骨架真正可用。不依赖驱动，先做。
-2. **P2 修 SAP 地址 + 锁死格式**：让流真正能被第三方订阅（MS-2 验收点）。这是对外契约的地基，成本最低收益最高。
-3. 之后 P3（路由 JSON 契约）→ P4（混音总线）→ P5（面板矩阵）→ P6（DSP），逐步落地产品的核心价值。
+1. **P1 清理驱动 Scream 残留**：删掉内核 WSK 组播 / ivshmem / 换皮标识，死缓冲与空壳 IOCTL 标注为未实现占位。先清地基，避免误导。
+2. **P2 修 M9-1/M9-2**（+ M9-3/M9-4）：让「常驻引擎 + 面板」骨架真正可用。
+3. **P3 修 SAP 地址 + 锁死格式**：让流真正能被第三方订阅（第一个关键验收点）。这是对外契约的地基，成本最低收益最高。
+4. 之后 P4（路由 JSON 契约）→ P5（混音总线）→ P6（面板矩阵）→ P7（DSP），逐步落地产品的核心价值。
 
-驱动通路（阶段② P7/P8）最后再说，需 WDK + Windows 侧深度参与。
+内核相关（P8 收流端点 / P9 IOCTL + 共享内存）最后再做，需 WDK + Windows 侧深度参与。
