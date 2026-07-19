@@ -94,6 +94,44 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
         m_jitterBuffer.Reset();
     }
 
+    // M9: Set up IPC command handler
+    m_pipeServer.SetHandler([this](const std::string& cmd, const std::string& arg) -> std::string {
+        if (cmd == "STATUS") {
+            char buf[512];
+            const char* stateStr = "stopped";
+            switch (m_state) {
+                case EngineState::Running: stateStr = "running"; break;
+                case EngineState::Paused:  stateStr = "paused"; break;
+                default: break;
+            }
+            DWORD total = m_stats.totalFrames.load(std::memory_order_relaxed);
+            snprintf(buf, sizeof(buf),
+                "STATUS state=%s fps=%lu tx=%llu rx=%llu jb=%zu ptp=%d ptp_off=%.0fns",
+                stateStr, total,
+                (unsigned long long)m_networkThread.GetPacketsSent(),
+                (unsigned long long)m_networkReceiver.GetPacketsRcvd(),
+                m_jitterBuffer.AvailableRead(),
+                (int)m_ptpClock.GetState(),
+                m_ptpClock.GetOffsetNs());
+            return buf;
+        }
+        if (cmd == "START") { Start(); return "OK"; }
+        if (cmd == "STOP")  { Stop();  return "OK"; }
+        if (cmd == "PAUSE") { Pause(); return "OK"; }
+        if (cmd == "RESUME"){ Resume();return "OK"; }
+        if (cmd == "SET" && arg.find("dest ") == 0) {
+            m_netConfig.destAddr = arg.substr(5); return "OK";
+        }
+        if (cmd == "SET" && arg.find("source ") == 0) {
+            m_netConfig.sourceAddr = arg.substr(7); return "OK";
+        }
+        if (cmd == "SET" && arg.find("port ") == 0) {
+            m_netConfig.destPort = (uint16_t)atoi(arg.substr(5).c_str()); return "OK";
+        }
+        if (cmd == "EXIT") { SignalStop(); return "OK"; }
+        return "ERR unknown command";
+    });
+
     m_state = EngineState::Initialized;
     Logger::Instance().Info("Engine initialized: %u Hz, %u-bit, %u ch [%s%s]",
         m_config.sampleRate, m_config.bitsPerSample, m_config.channels,
@@ -115,6 +153,9 @@ bool Aes67Engine::Start() {
         Logger::Instance().Error("Failed to start audio thread");
         return false;
     }
+
+    // M9: Start IPC pipe server
+    m_pipeServer.Start();
 
     // M7: Start PTP clock synchronization
     if (m_netConfig.enablePtp) {
@@ -179,6 +220,7 @@ bool Aes67Engine::Start() {
 void Aes67Engine::Stop() {
     if (m_state != EngineState::Running && m_state != EngineState::Paused) return;
     // Reverse dependency order
+    m_pipeServer.Stop();
     m_ptpThread.Stop();
     m_sapAnnouncer.Stop();
     m_networkThread.Stop();

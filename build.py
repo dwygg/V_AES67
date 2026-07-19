@@ -110,10 +110,13 @@ def build_engine():
         'network_thread.cpp sap_announcer.cpp '
         'network_receiver.cpp audio_render_thread.cpp '
         'ptp_clock.cpp ptp_thread.cpp '
+        'pipe_server.cpp '
         '/Fe:aes67_engine.exe ole32.lib avrt.lib ws2_32.lib winmm.lib',
         # Standalone smoke tests (unchanged)
         'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 loopback.cpp /Fe:loopback.exe ole32.lib avrt.lib',
-        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 sine_test.cpp /Fe:sine_test.exe ole32.lib avrt.lib'
+        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 sine_test.cpp /Fe:sine_test.exe ole32.lib avrt.lib',
+        # IPC pipe test
+        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 _pipetest.cpp /Fe:_pipetest.exe'
     ])
 
 def build_userland():
@@ -133,12 +136,28 @@ def build_asio():
         'cl /EHsc /std:c++17 /nologo /W3 /utf-8 _test_load.cpp /Fe:_test_load.exe'
     ])
 
+def build_panel():
+    """编译 Qt 配置面板"""
+    panel_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'panel')
+    qt_prefix = r"D:\Qt\6.8.3\msvc2022_64"
+    build_dir = os.path.join(panel_dir, 'build')
+
+    run_cmd("Building Qt Panel (M9)", [
+        f'if not exist "{build_dir}" mkdir "{build_dir}"',
+        f'cd /d "{build_dir}"',
+        f'cmake -S "{panel_dir}" -B "{build_dir}" '
+        f'-DCMAKE_PREFIX_PATH="{qt_prefix}" '
+        f'-G "Visual Studio 18 2026" -A x64',
+        f'cmake --build "{build_dir}" --config Release'
+    ])
+
 def help_text():
-    print("Usage: python build.py [driver|sign|install|user|all]")
+    print("Usage: python build.py [driver|sign|install|user|panel|all]")
     print("  driver   - Build WDM driver")
     print("  sign     - Sign driver INF + catalog")
     print("  install  - Install signed driver")
     print("  user     - Build user-mode AES67 engine")
+    print("  panel    - Build Qt control panel")
     print("  all      - Build + sign + install (full cycle)")
 
 if __name__ == '__main__':
@@ -148,6 +167,6 @@ if __name__ == '__main__':
     cmd = sys.argv[1]
     {'driver': build_driver, 'sign': sign_driver, 'install': install_driver,
      'user': build_userland, 'ioctl': build_ioctl_test, 'test-ioctl': run_ioctl_test,
-     'asio': build_asio,
+     'asio': build_asio, 'panel': build_panel,
      'all': lambda: (build_driver(), sign_driver(), install_driver()),
      'help': help_text}.get(cmd, help_text)()

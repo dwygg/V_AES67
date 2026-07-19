@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <string>
+#include <functional>
 #include "audio_config.h"
 #include "wasapi_device.h"
 #include "audio_thread.h"
@@ -14,6 +15,7 @@
 #include "audio_render_thread.h"
 #include "ptp_clock.h"
 #include "ptp_thread.h"
+#include "pipe_server.h"
 
 // ---- Network defaults ----
 constexpr char     kDefaultMulticastAddr[] = "239.69.1.128";
@@ -104,4 +106,7 @@ private:
     // M7 PTP clock synchronization
     PtpClock           m_ptpClock;
     PtpThread          m_ptpThread;
+
+    // M9 IPC
+    PipeServer         m_pipeServer;
 };
