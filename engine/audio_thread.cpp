@@ -68,7 +68,7 @@ void AudioThread::RunLoop() {
     DWORD taskIndex = 0;
     HANDLE hMmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
     if (!hMmcss) {
-        Logger::Instance().Warn("AvSetMmThreadCharacteristics failed: %lu — continuing without MMCSS",
+        Logger::Instance().Warn("AvSetMmThreadCharacteristics failed: %lu - continuing without MMCSS",
             GetLastError());
     } else {
         Logger::Instance().Info("MMCSS Pro Audio registered (task index %lu)", taskIndex);
@@ -79,7 +79,7 @@ void AudioThread::RunLoop() {
     if (m_client->IsEventDriven()) {
         hAudioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // auto-reset
         if (FAILED(m_client->SetEventHandle(hAudioEvent))) {
-            Logger::Instance().Warn("SetEventHandle failed — falling back to polling");
+            Logger::Instance().Warn("SetEventHandle failed - falling back to polling");
             CloseHandle(hAudioEvent);
             hAudioEvent = nullptr;
         }

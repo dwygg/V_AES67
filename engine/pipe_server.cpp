@@ -76,7 +76,7 @@ void PipeServer::RunLoop() {
             // Do NOT break the loop on a transient failure — that would leave the
             // engine alive but permanently deaf (panel stuck "Disconnected").
             // Back off briefly and retry so the server self-heals.
-            Logger::Instance().Error("CreateNamedPipe failed: %lu — retrying in 200ms", GetLastError());
+            Logger::Instance().Error("CreateNamedPipe failed: %lu - retrying in 200ms", GetLastError());
             if (WaitForSingleObject(m_stopEvent, 200) == WAIT_OBJECT_0) break;
             continue;
         }

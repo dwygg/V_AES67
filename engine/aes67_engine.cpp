@@ -81,8 +81,8 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
                         props->GetValue(PKEY_Device_FriendlyName, &var);
                         bool isAes67 = var.pwszVal && wcsstr(var.pwszVal, kTargetDeviceName);
                         if (!isAes67) {
-                            Logger::Instance().Info("RX output: %ls",
-                                var.pwszVal ? var.pwszVal : L"(unknown)");
+                            Logger::Instance().Info("RX output: %s",
+                                var.pwszVal ? WideToNarrow(var.pwszVal).c_str() : "(unknown)");
                             PropVariantClear(&var); props->Release();
                             m_deviceRx.Reset(dev);
                             break;
@@ -219,7 +219,7 @@ bool Aes67Engine::Start() {
     // M7: Start PTP clock synchronization
     if (m_netConfig.enablePtp) {
         if (!m_ptpThread.Start(&m_ptpClock)) {
-            Logger::Instance().Warn("PTP thread start failed — continuing without clock sync");
+            Logger::Instance().Warn("PTP thread start failed - continuing without clock sync");
         }
     }
 
@@ -236,7 +236,7 @@ bool Aes67Engine::Start() {
         // Start SAP announcer (non-fatal if fails)
         if (!m_sapAnnouncer.Start(m_networkThread.GetSSRC(),
                                   m_netConfig.destPort, m_config)) {
-            Logger::Instance().Warn("SAP announcer start failed — stream works but won't be auto-discovered");
+            Logger::Instance().Warn("SAP announcer start failed - stream works but won't be auto-discovered");
         }
     }
 
@@ -272,7 +272,7 @@ bool Aes67Engine::Start() {
     if (m_netConfig.enableTx && m_netConfig.enableRx) mode = "TX + RX (full duplex)";
     else if (m_netConfig.enableTx) mode = "capturing + transmitting";
     else if (m_netConfig.enableRx) mode = "receiving + rendering";
-    Logger::Instance().Info("Engine started — %s", mode);
+    Logger::Instance().Info("Engine started - %s", mode);
     return true;
 }
 
@@ -407,7 +407,7 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         // engine thread so the (possibly blocking) Start() never stalls the pipe.
         if (m_startAudioRequested.exchange(false, std::memory_order_acq_rel)) {
             if (m_state == EngineState::Initialized || m_state == EngineState::Stopped) {
-                Logger::Instance().Info("Audio start requested (pipe) — starting stream");
+                Logger::Instance().Info("Audio start requested (pipe) - starting stream");
                 // Restarting the audio thread resets duration accounting so a
                 // panel-driven start doesn't inherit stale elapsed time.
                 if (Start()) tickStart = GetTickCount();
@@ -417,7 +417,7 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         // M9-1 (P2): deferred STOP from the pipe thread — executed here on the
         // engine thread, so Stop() (which joins nothing on this thread) is safe.
         if (m_stopAudioRequested.exchange(false, std::memory_order_acq_rel)) {
-            Logger::Instance().Info("Audio stop requested (pipe) — stopping stream, keeping process/pipe alive");
+            Logger::Instance().Info("Audio stop requested (pipe) - stopping stream, keeping process/pipe alive");
             Stop();
         }
 

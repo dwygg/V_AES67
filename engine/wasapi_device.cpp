@@ -2,6 +2,23 @@
 #include "logger.h"
 #include <initguid.h>
 
+// Convert a UTF-16 (wchar_t) string to a console/log-safe narrow string.
+// The Logger uses vsnprintf (narrow CRT); passing %ls through it relies on the
+// C locale and silently truncates on the first non-ASCII char (e.g. Chinese
+// endpoint names like "扬声器"), which is why endpoint lines printed blank.
+// We convert explicitly with WideCharToMultiByte using the console output code
+// page so localized device names render correctly.
+std::string WideToNarrow(const wchar_t* w) {
+    if (!w || !*w) return std::string();
+    UINT cp = GetConsoleOutputCP();
+    if (cp == 0) cp = CP_UTF8;
+    int len = WideCharToMultiByte(cp, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return std::string();
+    std::string out((size_t)len - 1, '\0');
+    WideCharToMultiByte(cp, 0, w, -1, &out[0], len, nullptr, nullptr);
+    return out;
+}
+
 // ---- FindAudioDevice ----
 ComPtr<IMMDevice> FindAudioDevice(
     IMMDeviceEnumerator* enumerator,
@@ -26,7 +43,7 @@ ComPtr<IMMDevice> FindAudioDevice(
             PropVariantInit(&var);
             if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var))) {
                 if (var.pwszVal && wcsstr(var.pwszVal, nameSubstring)) {
-                    Logger::Instance().Info("Found device: %ls", var.pwszVal);
+                    Logger::Instance().Info("Found device: %s", WideToNarrow(var.pwszVal).c_str());
                     PropVariantClear(&var);
                     props->Release();
                     result.Reset(dev);
@@ -75,7 +92,8 @@ void LogRenderEndpoints(IMMDeviceEnumerator* enumerator) {
             PROPVARIANT var;
             PropVariantInit(&var);
             if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var)) && var.pwszVal) {
-                Logger::Instance().Info("  [render %u] %-10s %ls", i, stateStr, var.pwszVal);
+                Logger::Instance().Info("  [render %u] %-10s %s", i, stateStr,
+                                        WideToNarrow(var.pwszVal).c_str());
             } else {
                 Logger::Instance().Info("  [render %u] %-10s (no name)", i, stateStr);
             }

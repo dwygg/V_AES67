@@ -25,7 +25,7 @@ struct CmdLineArgs {
 
 static void PrintUsage() {
     puts("");
-    puts("AES67 Audio Engine — M4 Loopback Capture");
+    puts("AES67 Audio Engine - M4 Loopback Capture");
     puts("");
     puts("Usage: aes67_engine.exe [options]");
     puts("");
@@ -185,14 +185,14 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     // Log configuration
-    Logger::Instance().Info("AES67 Audio Engine M4 — Loopback Capture");
+    Logger::Instance().Info("AES67 Audio Engine M4 - Loopback Capture");
     Logger::Instance().Info("  Channels:    %u", args.config.channels);
     Logger::Instance().Info("  Sample rate: %u Hz", args.config.sampleRate);
     Logger::Instance().Info("  Bit depth:   %u-bit", args.config.bitsPerSample);
     Logger::Instance().Info("  Duration:    %u s (0=indefinite)", args.config.durationSec);
     Logger::Instance().Info("  Period:      %u us", args.config.periodUs);
     if (args.logFile) {
-        Logger::Instance().Info("  Log file:    %ls", args.logFile);
+        Logger::Instance().Info("  Log file:    %s", WideToNarrow(args.logFile).c_str());
     }
     if (args.netConfig.enableTx) {
         Logger::Instance().Info("  TX dest:     %s:%u", args.netConfig.destAddr.c_str(), args.netConfig.destPort);

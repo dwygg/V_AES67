@@ -66,6 +66,13 @@ ComPtr<IMMDevice> FindAudioDevice(
 // enabled (a disabled endpoint won't appear in DEVICE_STATE_ACTIVE at all).
 void LogRenderEndpoints(IMMDeviceEnumerator* enumerator);
 
+// ---- Convert a UTF-16 device/path string to a log-safe narrow string ----
+// The Logger uses the narrow CRT (vsnprintf); %ls truncates on the first
+// non-ASCII char under the default C locale. Use this + %s for any wide string
+// that may contain localized text (e.g. Chinese device names).
+#include <string>
+std::string WideToNarrow(const wchar_t* w);
+
 // ---- Core WASAPI client wrapper ----
 class WasapiClient {
 public:
