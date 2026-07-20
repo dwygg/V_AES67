@@ -108,6 +108,8 @@ private:
     std::atomic<bool>        m_startAudioRequested = false;  // P2: START audio, deferred to engine thread (Start() may block)
     std::atomic<bool>        m_stopAudioRequested = false;   // M9-1: STOP audio, keep process+pipe alive
     std::atomic<bool>        m_reconfigRequested = false;    // M9-3: SET changed net config -> rebuild sockets on engine thread
+    std::atomic<ULONGLONG>   m_lastPipeActivity{0};          // P3: GetTickCount64 when last pipe command received
+    static constexpr ULONGLONG kPipeHeartbeatTimeoutMs = 3000; // P3: 3s without pipe command → panel disconnected
 
     // M9-3 (P2): rebuild network TX/RX sockets to apply new dest/source addr+port
     // while running. MUST run on the engine thread (RunBlocking loop), never on the

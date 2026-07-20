@@ -9,7 +9,7 @@ constexpr UINT32 kDefaultSampleRate    = 48000;
 constexpr UINT16 kDefaultBitsPerSample = 24;
 constexpr UINT16 kDefaultChannels      = 2;
 constexpr UINT32 kDefaultDurationSec   = 10;           // 0 = indefinite
-constexpr UINT32 kDefaultPeriodUs      = 100000;       // 10ms in microseconds → 100000 hns
+constexpr UINT32 kDefaultPeriodUs      = 1000;         // AES67 ptime=1ms (48 samples @48kHz)
 constexpr UINT32 kDefaultPeriodHns     = kDefaultPeriodUs * 10; // 1,000,000 hns = 100ms
 
 constexpr UINT32 kEngineStatusIntervalMs = 1000;       // stats print interval

@@ -157,6 +157,8 @@ void PipeServer::HandleClient(HANDLE hPipe) {
 
     if (!OverlappedIo(hPipe, /*isWrite=*/false, buf, sizeof(buf) - 1, &bytesRead)
         || bytesRead == 0) {
+        // P3: client disconnected (panel closed) → notify engine to auto-stop audio
+        if (m_onDisconnect) m_onDisconnect();
         return;
     }
     buf[bytesRead] = '\0';

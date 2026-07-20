@@ -21,6 +21,11 @@ public:
     // Set the handler before Start(). Called from pipe thread — keep it fast.
     void SetHandler(CommandHandler handler) { m_handler = std::move(handler); }
 
+    // P3: optional disconnect notifier — called when client closes pipe connection.
+    // Engine uses this to auto-stop audio when the panel exits.
+    using DisconnectHandler = std::function<void()>;
+    void SetDisconnectHandler(DisconnectHandler handler) { m_onDisconnect = std::move(handler); }
+
     bool Start();
     void Stop();
 
@@ -31,7 +36,8 @@ private:
     void RunLoop();
     void HandleClient(HANDLE hPipe);
 
-    CommandHandler m_handler;
+    CommandHandler   m_handler;
+    DisconnectHandler m_onDisconnect;
     HANDLE  m_thread = nullptr;
     HANDLE  m_stopEvent = nullptr;
     std::atomic<bool> m_running{false};

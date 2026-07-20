@@ -113,6 +113,8 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
 
     // M9: Set up IPC command handler
     m_pipeServer.SetHandler([this](const std::string& cmd, const std::string& arg) -> std::string {
+        // P3 heartbeat: any command from panel resets the disconnect timer
+        m_lastPipeActivity.store(GetTickCount64(), std::memory_order_relaxed);
         if (cmd == "STATUS") {
             char buf[512];
             const char* stateStr = "stopped";
@@ -233,9 +235,12 @@ bool Aes67Engine::Start() {
             return false;
         }
 
-        // Start SAP announcer (non-fatal if fails)
+        // Start SAP announcer — pass RTP dest address (P3 SAP-1 fix:
+        // 之前只传 3 参，mcastAddr 走默认值 239.255.255.255(SAP 组地址)，
+        // SDP c= 行错误通告为 SAP 地址而非真实 RTP 目标，导致其他设备无法发现流)
         if (!m_sapAnnouncer.Start(m_networkThread.GetSSRC(),
-                                  m_netConfig.destPort, m_config)) {
+                                  m_netConfig.destPort, m_config,
+                                  m_netConfig.destAddr.c_str())) {
             Logger::Instance().Warn("SAP announcer start failed - stream works but won't be auto-discovered");
         }
     }
@@ -312,7 +317,8 @@ void Aes67Engine::ApplyNetworkReconfig() {
                                    m_netConfig.destPort)) {
             Logger::Instance().Error("Reconfig: TX network restart failed");
         } else if (!m_sapAnnouncer.Start(m_networkThread.GetSSRC(),
-                                         m_netConfig.destPort, m_config)) {
+                                         m_netConfig.destPort, m_config,
+                                         m_netConfig.destAddr.c_str())) {
             Logger::Instance().Warn("Reconfig: SAP announcer restart failed");
         }
         Logger::Instance().Info("Reconfig: TX now -> %s:%u",
@@ -424,6 +430,19 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         // M9-3 (P2): apply SET address/port changes by rebuilding sockets here.
         if (m_reconfigRequested.exchange(false, std::memory_order_acq_rel)) {
             ApplyNetworkReconfig();
+        }
+
+        // P3 heartbeat: panel sends STATUS every ~1s; if no command for >3s,
+        // treat as disconnected and auto-stop audio (process+pipe stay alive).
+        if (m_state == EngineState::Running) {
+            ULONGLONG idleMs = GetTickCount64()
+                - m_lastPipeActivity.load(std::memory_order_relaxed);
+            if (idleMs > kPipeHeartbeatTimeoutMs) {
+                Logger::Instance().Info("[P3] Panel heartbeat timeout (%llums) —"
+                    " auto-stopping audio", idleMs);
+                fflush(stdout);
+                SignalStopAudio();
+            }
         }
 
         // While stopped/paused, just idle and keep serving the pipe.
