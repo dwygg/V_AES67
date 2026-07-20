@@ -1,233 +1,258 @@
 #!/usr/bin/env python3
-"""AES67 项目统一构建脚本 — 从 Git Bash 直接调，不依赖用户双击"""
+"""AES67 项目统一构建脚本 — 从 Git Bash / CMD 直接调，不依赖用户双击。
+
+  环境变量（全部可选，不存在时用默认值）：
+    VS_DIR          Visual Studio 安装目录
+    WDK_DIR         Windows Kits 安装目录
+    WDK_VERSION     WDK/SDK 版本号
+    QT_DIR          Qt 安装目录（含 msvc2022_64 子目录）
+"""
+
 import subprocess, sys, os, re, datetime
-# 强制终端输出 UTF-8，避免 GBK 乱码
+
+# ── 编码 ────────────────────────────────────────────────
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-VSDIR = r"D:\Program Files\Microsoft Visual Studio\18\Community"
-VCVARS = f'{VSDIR}\\VC\\Auxiliary\\Build\\vcvars64.bat'
-WDK_BIN = r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.28000.0"
-DRIVER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'driver')
-DRIVER_PROJ = f'{DRIVER_DIR}\\AES67Driver.vcxproj'
-DRIVER_OUT = f'{DRIVER_DIR}\\x64\\Win10'
+# ── 路径推导（优先环境变量，不存在时用默认值） ────────
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DRIVER_DIR = os.path.join(ROOT, 'driver')
+DRIVER_OUT = os.path.join(DRIVER_DIR, 'x64', 'Win10')
 
+VSDIR = os.environ.get('VS_DIR', r'D:\Program Files\Microsoft Visual Studio\18\Community')
+VCVARS = os.path.join(VSDIR, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat')
+WINSDK_VERSION = os.environ.get('WDK_VERSION', '10.0.28000.0')
+WINSDK_DIR = os.environ.get('WDK_DIR', r'C:\Program Files (x86)\Windows Kits\10')
+WINSDK_BIN = os.path.join(WINSDK_DIR, 'bin', WINSDK_VERSION)
+
+# ── 核心：运行批处理命令 ────────────────────────────────
 def run_cmd(title, cmds):
-    """写临时 .bat 文件再执行，避免路径转义问题"""
-    bat = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_build_tmp.bat')
-    # WDK 环境变量——msbuild 需要它们找到 portcls.h 等内核头文件
-    wdk_root = r'C:\Program Files (x86)\Windows Kits\10'
-    script = f'@echo off\r\n'
-    script += f'set WDKCONTENTROOT={wdk_root}\r\n'
-    script += f'set WindowsSdkDir={wdk_root}\\\r\n'
-    script += f'set WindowsSDKVersion=10.0.28000.0\r\n'
-    script += f'set WindowsLibPath={wdk_root}\\Lib\\10.0.28000.0\\km\\x64\r\n'
-    script += f'call "{VCVARS}"\r\n'
+    """写临时 .bat 文件，用 cmd /c 执行，输出记入日志"""
+    bat = os.path.join(ROOT, '_build_tmp.bat')
+    log = os.path.join(DRIVER_DIR, '_build.log')
+
+    script = '@echo off\r\n'
+    script += f'set "WDKCONTENTROOT={WINSDK_DIR}"\r\n'
+    script += f'set "WindowsSdkDir={WINSDK_DIR}"\r\n'
+    script += f'set "WindowsSdkVersion={WINSDK_VERSION}"\r\n'
+    script += f'call "{VCVARS}" >nul 2>&1\r\n'
     script += f'cd /d "{DRIVER_DIR}"\r\n'
     script += '\r\n'.join(cmds)
+
     with open(bat, 'w', encoding='ascii') as f:
         f.write(script)
-    print(f"\n=== {title} ===")
-    r = subprocess.run(['cmd', '/c', bat], capture_output=True, timeout=120)
-    os.remove(bat)
-    # 输出写入日志文件避免 GBK 终端乱码
-    log = os.path.join(DRIVER_DIR, '_build.log')
-    with open(log, 'wb') as f:
-        if r.stdout: f.write(r.stdout)
-        if r.stderr: f.write(r.stderr)
+
+    print(f"\n=== {title} === (log: {log})")
+    try:
+        with open(log, 'wb') as f:
+            r = subprocess.run(['cmd', '/c', bat],
+                              stdin=subprocess.DEVNULL,
+                              stdout=f, stderr=subprocess.STDOUT, timeout=120)
+    finally:
+        try: os.remove(bat)
+        except OSError: pass
+
     if r.returncode == 0:
-        print(f"  BUILD SUCCESS (log: {log})")
+        print(f"  BUILD SUCCESS")
     else:
-        print(f"  BUILD FAILED rc={r.returncode} (log: {log})")
-        # 打印最后几行
+        print(f"  BUILD FAILED rc={r.returncode}")
         with open(log, 'r', encoding='gbk', errors='replace') as f:
             lines = f.readlines()
-            for l in lines[-8:]: print(f"  {l.rstrip().encode('utf-8', errors='replace').decode('utf-8', errors='replace')}")
+            for l in lines[-8:]:
+                print(f"  {l.rstrip()}")
         sys.exit(r.returncode)
 
+# ── 驱动 ─────────────────────────────────────────────────
 def build_driver():
     run_cmd("Building AES67 Driver", [
-        f'msbuild {DRIVER_PROJ} /p:Configuration=Win10 /p:Platform=x64 /t:Build'
+        f'msbuild {DRIVER_DIR}\\AES67Driver.vcxproj '
+        f'/p:Configuration=Win10 /p:Platform=x64 /t:Build'
     ])
 
 def _fix_driverver_utc():
-    """把输出目录 INF 的 DriverVer 日期强制改成 UTC 安全日期(UTC 前一天).
+    """把输出目录及子目录 INF 的 DriverVer 日期改成 UTC 前一天，避免 inf2cat 拒签。
 
-    背景: msbuild 的 StampInf 任务会把输出 INF 的 DriverVer 日期改成编译当天
-    的本地日期. 跨时区时(如北京已 7/20 凌晨但 UTC 仍 7/19), 会打成 07/20/2026,
-    随后 inf2cat 按 UTC 判定该日期"在未来"而拒绝生成 .cat.
-    这里直接把输出 INF 的 DriverVer 日期覆盖成 UTC 前一天, 任何时区/任何时刻
-    编译都不会超前于当前 UTC, 纯字符串替换不依赖 WDK 内部机制, 绝对可控.
-    """
-    inf_path = f'{DRIVER_OUT}\\AES67Driver.inf'
-    if not os.path.exists(inf_path):
-        print(f"  WARN: 输出 INF 不存在, 跳过 DriverVer 修正: {inf_path}")
-        return
-    safe = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=1)
-    safe_str = safe.strftime('%m/%d/%Y')  # inf2cat 要求 MM/DD/YYYY
-    with open(inf_path, 'r', encoding='utf-8', errors='replace') as f:
-        text = f.read()
-    # DriverVer = MM/DD/YYYY, x.x.x.x  ->  仅替换日期部分, 版本号保留
-    new_text, n = re.subn(
-        r'(DriverVer\s*=\s*)\d{2}/\d{2}/\d{4}',
-        lambda m: m.group(1) + safe_str,
-        text, count=1)
-    if n:
-        with open(inf_path, 'w', encoding='utf-8') as f:
-            f.write(new_text)
-        print(f"  DriverVer 日期已修正为 UTC 安全日期 {safe_str} (输出 INF)")
-    else:
-        print("  WARN: 未在输出 INF 中找到 DriverVer 行, 未修改")
+    WORKAROUND: 标准做法应通过 vcxproj 的 StampInf 元数据控制日期，
+    但 WDK StampInf 任务不支持 UTC 模式。日期偏移一天不影响驱动功能，
+    仅影响 INF 版本排序（开发阶段可接受）。正式发布用 WHQL 不需要 inf2cat。"""
+    safe = (datetime.datetime.now(datetime.timezone.utc).date()
+            - datetime.timedelta(days=1)).strftime('%m/%d/%Y')
+    for inf in [f'{DRIVER_OUT}\\AES67Driver.inf',
+                f'{DRIVER_OUT}\\AES67Driver\\AES67Driver.inf']:
+        if not os.path.exists(inf): continue
+        with open(inf, 'r', encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        new_text, n = re.subn(r'(DriverVer\s*=\s*)\d{2}/\d{2}/\d{4}',
+                              r'\g<1>' + safe, text, count=1)
+        if n:
+            with open(inf, 'w', encoding='utf-8') as f:
+                f.write(new_text)
+            print(f"  DriverVer → {safe}  ({os.path.basename(os.path.dirname(inf))}\\{os.path.basename(inf)})")
 
 def sign_driver():
-    inf2cat = f'{WDK_BIN}\\x86\\inf2cat.exe'
-    signtool = f'{WDK_BIN}\\x64\\signtool.exe'
-    # 先把输出 INF 的 DriverVer 日期改成 UTC 安全日期, 再跑 inf2cat
     _fix_driverver_utc()
+    inf2cat = f'{WINSDK_BIN}\\x86\\inf2cat.exe'
+    signtool = f'{WINSDK_BIN}\\x64\\signtool.exe'
     run_cmd("Signing Driver INF", [
         f'cd /d "{DRIVER_OUT}"',
         f'"{inf2cat}" /driver:. /os:10_19H1_X64',
         f'"{signtool}" sign /fd SHA256 /a aes67driver.cat'
     ])
 
-def build_ioctl_test():
-    """编译 IOCTL 测试程序"""
-    run_cmd("Building IOCTL Test", [
-        f'cd /d "{os.path.dirname(os.path.abspath(__file__))}"',
-        'cl /EHsc /W3 /nologo ioctl_test.cpp /Fe:ioctl_test.exe /I. setupapi.lib'
-    ])
-
-def run_ioctl_test():
-    """运行 IOCTL 测试程序"""
-    exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ioctl_test.exe')
-    if not os.path.exists(exe):
-        print("ioctl_test.exe not found, building first...")
-        build_ioctl_test()
-    r = subprocess.run([exe], capture_output=True, timeout=10)
-    print((r.stdout or b'').decode('gbk', errors='replace'))
-    if r.stderr:
-        print((r.stderr or b'').decode('gbk', errors='replace'))
-    print(f"RC: {r.returncode}")
-
 def _uninstall_all_aes67_oem_packages():
-    """动态枚举并删除所有匹配 AES67Driver 的 oem*.inf 驱动包。
-
-    之前硬编码 oem175/oem176 是错的——每台机器、每次安装的 oem 编号都不同,
-    硬编码几乎必然删不掉真正的旧包, 导致 /add-driver 只是叠加安装, 旧的
-    KS interface 类注册残留, 改了 INF 的 AddInterface 也不生效(端点状态不变)。
-    这里用 pnputil /enum-drivers 找出所有 OriginalName=AES67Driver.inf 的包,
-    逐个 /delete-driver /force, 保证下一次 /install 是干净的全新注册。
-    """
+    """枚举并删除所有 AES67Driver.inf 对应的 oem*.inf 包"""
     try:
         r = subprocess.run('pnputil /enum-drivers', shell=True,
-                            capture_output=True, timeout=30)
+                           stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=30)
         out = (r.stdout or b'').decode('gbk', errors='replace')
     except Exception as e:
-        print(f"enum-drivers failed: {e}")
+        print(f"  enum-drivers failed: {e}")
         return
-    # 解析出 "Published Name: oemNN.inf" 且其 Original Name 为 AES67Driver.inf 的条目
-    oem = None
     targets = []
+    pending_oem = None
     for line in out.splitlines():
-        s = line.strip()
-        low = s.lower()
-        if low.startswith('published name') or low.startswith('发布名称'):
-            oem = s.split(':', 1)[1].strip() if ':' in s else None
-        elif (low.startswith('original name') or low.startswith('原始名称')) and oem:
-            if 'aes67driver.inf' in low:
-                targets.append(oem)
-            oem = None
+        line = line.strip()
+        lo = line.lower()
+        if lo.startswith('published name') or lo.startswith('发布名称'):
+            pending_oem = line.split(':', 1)[1].strip() if ':' in line else None
+        elif pending_oem and (lo.startswith('original name') or lo.startswith('原始名称')):
+            if 'aes67driver.inf' in lo:
+                targets.append(pending_oem)
+            pending_oem = None
     if not targets:
-        print("No existing AES67Driver oem package found (clean).")
+        print("  No existing AES67Driver oem package found.")
         return
-    print(f"Found existing AES67 driver packages: {targets}")
+    print(f"  Found old packages: {targets}")
     for pkg in targets:
-        run_cmd(f"Deleting old package {pkg}", [
+        run_cmd(f"Deleting {pkg}", [
             f'pnputil /delete-driver {pkg} /uninstall /force'
         ])
 
 def install_driver():
-    # 1. 先移除设备节点
+    devcon = f'{WINSDK_BIN}\\..\\..\\Tools\\{WINSDK_VERSION}\\x64\\devcon.exe'
     run_cmd("Removing old device node", [
-        'devcon remove *AES67Driver 2>nul',
+        f'"{devcon}" remove *AES67Driver 2>nul',
         'pnputil /remove-device /deviceid *AES67Driver 2>nul',
         'ping -n 3 127.0.0.1 >nul'
     ])
-    # 2. 动态删除所有旧的 AES67 驱动包(修复硬编码 oem175/176 的老 bug)
     _uninstall_all_aes67_oem_packages()
-    # 3. 全新安装(此时 INF 的 KS interface 注册会重建)
     run_cmd("Installing new driver", [
         f'pnputil /add-driver {DRIVER_OUT}\\AES67Driver.inf /install'
     ])
 
+# ── 用户态引擎 ──────────────────────────────────────────
+ENGINE_SRCS = [
+    'main.cpp', 'aes67_engine.cpp', 'wasapi_device.cpp', 'audio_thread.cpp',
+    'logger.cpp', 'network_thread.cpp', 'sap_announcer.cpp',
+    'network_receiver.cpp', 'audio_render_thread.cpp',
+    'ptp_clock.cpp', 'ptp_thread.cpp', 'pipe_server.cpp'
+]
+ENGINE_LIBS = 'ole32.lib avrt.lib ws2_32.lib winmm.lib'
+ENGINE_FLAGS = '/EHsc /std:c++17 /O2 /nologo /W3 /utf-8'
+
 def build_engine():
-    """编译用户态音频引擎 (M4 Framework + standalone tests)"""
-    proj = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'engine')
-    run_cmd("Building Audio Engine (M5 AES67 Tx)", [
-        f'cd /d "{proj}"',
-        # M5 Engine with AES67 transmit
-        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 '
-        'main.cpp aes67_engine.cpp wasapi_device.cpp audio_thread.cpp logger.cpp '
-        'network_thread.cpp sap_announcer.cpp '
-        'network_receiver.cpp audio_render_thread.cpp '
-        'ptp_clock.cpp ptp_thread.cpp '
-        'pipe_server.cpp '
-        '/Fe:aes67_engine.exe ole32.lib avrt.lib ws2_32.lib winmm.lib',
-        # Standalone smoke tests (unchanged)
-        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 loopback.cpp /Fe:loopback.exe ole32.lib avrt.lib',
-        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 sine_test.cpp /Fe:sine_test.exe ole32.lib avrt.lib',
-        # IPC pipe test
-        'cl /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 _pipetest.cpp /Fe:_pipetest.exe'
-    ])
+    proj = os.path.join(ROOT, 'engine')
+    cmds = [f'cd /d "{proj}"']
+    cmds.append(f'cl {ENGINE_FLAGS} {" ".join(ENGINE_SRCS)} '
+                f'/Fe:aes67_engine.exe {ENGINE_LIBS}')
+    cmds.append(f'cl {ENGINE_FLAGS} loopback.cpp /Fe:loopback.exe ole32.lib avrt.lib')
+    cmds.append(f'cl {ENGINE_FLAGS} sine_test.cpp /Fe:sine_test.exe ole32.lib avrt.lib')
+    cmds.append(f'cl {ENGINE_FLAGS} _pipetest.cpp /Fe:_pipetest.exe')
+    run_cmd("Building Audio Engine (M5 AES67 Tx)", cmds)
 
 def build_userland():
     build_engine()
 
+# ── ASIO ─────────────────────────────────────────────────
 def build_asio():
-    """编译 ASIO DLL"""
-    asio_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'asio')
+    asio_dir = os.path.join(ROOT, 'asio')
     run_cmd("Building ASIO DLL (M8)", [
         f'cd /d "{asio_dir}"',
-        # Minimal ASIO DLL (known working)
-        'cl /LD /EHsc /std:c++17 /O2 /nologo /W3 /utf-8 /MT '
-        'asio_minimal.cpp '
-        '/Fe:AES67_ASIO.dll ws2_32.lib winmm.lib '
-        '/link /DEF:asio_exports.def',
-        # Quick load test
-        'cl /EHsc /std:c++17 /nologo /W3 /utf-8 _test_load.cpp /Fe:_test_load.exe'
+        f'cl /LD {ENGINE_FLAGS} /MD '
+        f'asio_minimal.cpp /Fe:AES67_ASIO.dll ws2_32.lib winmm.lib '
+        f'/link /DEF:asio_exports.def',
+        f'cl {ENGINE_FLAGS} _test_load.cpp /Fe:_test_load.exe'
     ])
 
+# ── Qt 面板 ──────────────────────────────────────────────
 def build_panel():
-    """编译 Qt 配置面板"""
-    panel_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'panel')
-    qt_prefix = r"D:\Qt\6.8.3\msvc2022_64"
+    panel_dir = os.path.join(ROOT, 'panel')
+    qt_prefix = os.environ.get('QT_DIR', r'D:\Qt\6.8.3\msvc2022_64')
     build_dir = os.path.join(panel_dir, 'build')
+
+    # 自动检测 cmake generator（先查当前 VS 版本的 generator 名）
+    vs_year = os.path.basename(VSDIR)  # e.g. "18" → 2026, "2022" → 2022
+    gen = f"Visual Studio {vs_year}"
+    if vs_year.isdigit() and len(vs_year) == 2:
+        gen = f"Visual Studio {2000 + int(vs_year)}"
 
     run_cmd("Building Qt Panel (M9)", [
         f'if not exist "{build_dir}" mkdir "{build_dir}"',
         f'cd /d "{build_dir}"',
         f'cmake -S "{panel_dir}" -B "{build_dir}" '
         f'-DCMAKE_PREFIX_PATH="{qt_prefix}" '
-        f'-G "Visual Studio 18 2026" -A x64',
+        f'-G "{gen}" -A x64',
         f'cmake --build "{build_dir}" --config Release'
     ])
 
-def help_text():
-    print("Usage: python build.py [driver|sign|install|user|panel|all]")
-    print("  driver   - Build WDM driver")
-    print("  sign     - Sign driver INF + catalog")
-    print("  install  - Install signed driver")
-    print("  user     - Build user-mode AES67 engine")
-    print("  panel    - Build Qt control panel")
-    print("  all      - Build + sign + install (full cycle)")
+# ── IOCTL 测试 ───────────────────────────────────────────
+def build_ioctl_test():
+    run_cmd("Building IOCTL Test", [
+        f'cd /d "{ROOT}"',
+        f'cl /EHsc /W3 /nologo ioctl_test.cpp /Fe:ioctl_test.exe '
+        f'/I. setupapi.lib'
+    ])
 
+def run_ioctl_test():
+    exe = os.path.join(ROOT, 'ioctl_test.exe')
+    if not os.path.exists(exe):
+        print("ioctl_test.exe not found, building first...")
+        build_ioctl_test()
+    r = subprocess.run([exe], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=10)
+    print((r.stdout or b'').decode('gbk', errors='replace'))
+    if r.stderr:
+        print((r.stderr or b'').decode('gbk', errors='replace'))
+    print(f"RC: {r.returncode}")
+
+# ── 帮助 ─────────────────────────────────────────────────
+def help_text():
+    print("Usage: python build.py <command>")
+    print("Commands:")
+    for c, d in COMMANDS.items():
+        print(f"  {c:<12} {d}")
+    print()
+    print("Environment variables (optional, fallback to defaults):")
+    print("  VS_DIR         Visual Studio install dir")
+    print("  WDK_DIR        Windows Kits install dir")
+    print("  WDK_VERSION    WDK/SDK version, e.g. 10.0.28000.0")
+    print("  QT_DIR         Qt dir (must contain msvc2022_64 subdir)")
+
+COMMANDS = {
+    'driver':     'Build WDM driver',
+    'sign':       'Sign driver INF + catalog',
+    'install':    'Install signed driver',
+    'user':       'Build user-mode AES67 engine',
+    'panel':      'Build Qt control panel',
+    'asio':       'Build ASIO DLL',
+    'ioctl':      'Build IOCTL test program',
+    'test-ioctl': 'Run IOCTL test (auto-builds if needed)',
+    'all':        'Build + sign + install (full cycle)',
+    'help':       'Show this help',
+}
+
+# ── 入口 ─────────────────────────────────────────────────
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         help_text()
         sys.exit(1)
     cmd = sys.argv[1]
-    {'driver': build_driver, 'sign': sign_driver, 'install': install_driver,
-     'user': build_userland, 'ioctl': build_ioctl_test, 'test-ioctl': run_ioctl_test,
-     'asio': build_asio, 'panel': build_panel,
-     'all': lambda: (build_driver(), sign_driver(), install_driver()),
-     'help': help_text}.get(cmd, help_text)()
+    actions = {
+        'driver': build_driver, 'sign': sign_driver, 'install': install_driver,
+        'user': build_userland, 'panel': build_panel, 'asio': build_asio,
+        'ioctl': build_ioctl_test, 'test-ioctl': run_ioctl_test,
+        'all': lambda: (build_driver(), sign_driver(), install_driver()),
+        'help': help_text,
+    }
+    actions.get(cmd, help_text)()

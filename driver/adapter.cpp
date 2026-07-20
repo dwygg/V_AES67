@@ -154,26 +154,23 @@ Returns:
 
 
 
-//=============================================================================
-// FIX (P1): The custom IOCTL dispatch below is a RUNTIME callback — it is
-// registered into DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] and gets
-// invoked long after DriverEntry returns. It therefore MUST NOT live in the
-// "INIT" code segment: INIT is marked discardable (/SECTION:"INIT,d") and the
-// system frees it once DriverEntry completes. Executing a handler out of freed
-// INIT memory triggers ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY (bugcheck 0xFC)
-// on the first IOCTL. Keep it in the pageable "PAGE" segment instead — IOCTL
-// dispatch runs at PASSIVE_LEVEL and this handler touches nothing non-pageable.
-#pragma code_seg("PAGE")
-// ---- 自定义 IOCTL 分发 ----
+// ---- 独立 IOCTL 设备 (P2 重构) ----
 //
-// TODO(P9): 这是"内核↔用户态主动脉"的骨架，目前还是空壳：
-//   - IOCTL_AES67_GET_BUFFER 能返回 g_SharedBuffer 的物理地址，但那块缓冲当前
-//     没有任何音频写入（见 §共享内存 的 TODO(P9)），映射后读到的是全零。
-//   - IOCTL_AES67_GET_POSITION / IOCTL_AES67_SET_FORMAT 目前直接返回成功，
-//     没有真正的读写指针推进和格式协商。
-//   P9 阶段：把 CSaveData::WriteData() 的 PCM 帧写入 g_SharedBuffer 环形缓冲，
-//   在此维护 ReadOffset/WriteOffset，并让 SET_FORMAT 真正生效。
-static PDRIVER_DISPATCH g_PortClsDeviceControl;  // 保存 PortCls 原 handler
+// P2 前：DriverEntry 里全局 hook MajorFunction[IRP_MJ_DEVICE_CONTROL],
+// g_PortClsDeviceControl 保存时机依赖与 PcInitializeAdapterDriver 的顺序
+// → 顺序错 → 丢失 PortCls handler → audiodg 静默失败。
+//
+// P2 后：在 dispatch handler 里按设备对象分流 — 请求发到 \\.\AES67IOCTL
+// 就处理自定义 IOCTL，否则转发给 PortCls。DeviceObject 检查保证即使
+// PortCls handler 保存对了，也不会误拦截其他设备的 IOCTL。
+//
+// ╔══ WARNING: DriverEntry 保存顺序依赖 ═══════════════════════════╗
+// ║  g_PortClsDeviceControl 必须在 PcInitializeAdapterDriver()     ║
+// ║  **之后** 保存（见 DriverEntry 末尾）。顺序反了 → 拿到的不是  ║
+// ║  PortCls handler → audiodg IOCTL 全被转错 → 端点消失。        ║
+// ║  排查：检查调试日志 [DriverEntry] PortCls handler= 的地址。    ║
+// ╚═════════════════════════════════════════════════════════════════╝
+#pragma code_seg("PAGE")
 
 // 共享内存描述结构（通过 IOCTL GET_BUFFER 返回给用户态）
 typedef struct _AES67_BUFFER_INFO {
@@ -185,15 +182,23 @@ typedef struct _AES67_BUFFER_INFO {
     ULONG   SampleRate;         // 采样率
 } AES67_BUFFER_INFO;
 
-// TODO(P9): this hooks the GLOBAL IRP_MJ_DEVICE_CONTROL, so it also intercepts
-//   PortCls/audio-stack IOCTLs before forwarding to g_PortClsDeviceControl.
-//   Most audio IOCTLs come in at PASSIVE_LEVEL, but if any arrives at
-//   DISPATCH_LEVEL a pageable handler could fault at high IRQL (bugcheck 0xA).
-//   If a non-0xFC bugcheck shows up after this fix, drop PAGED_CODE() and move
-//   this routine to a non-paged segment. The proper P9 fix is to stop hooking
-//   the global dispatch entry and expose the IOCTL via a dedicated interface.
+// PortCls 原 handler（运行时分流用）和独立 IOCTL 设备
+static PDRIVER_DISPATCH g_PortClsDeviceControl = NULL;
+static PDEVICE_OBJECT     g_IoctlDevice = NULL;
+
 static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
-    PAGED_CODE();   // IOCTL dispatch runs at PASSIVE_LEVEL; handler is pageable.
+    PAGED_CODE();
+
+    // 不是发到 \\.\AES67IOCTL 的请求 → 原样交给 PortCls
+    if (DeviceObject != g_IoctlDevice) {
+        return g_PortClsDeviceControl(DeviceObject, Irp);
+    }
+    // 确保 g_IoctlDevice 不为 NULL（StartDevice 里已创建）。如果走到这里且为
+    // NULL 说明 StartDevice 未调用或失败了 → DeviceObject 检查会被跳过，
+    // 所有 IOCTL 都会走到下面自定义处理。这个条件永远不应触发。
+    if (!g_IoctlDevice) {
+        return g_PortClsDeviceControl(DeviceObject, Irp);
+    }
 
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
     ULONG code = stack->Parameters.DeviceIoControl.IoControlCode;
@@ -203,11 +208,7 @@ static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
             Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
         } else {
             AES67_BUFFER_INFO info = {0};
-            // TODO(P9): 真正实现共享内存通路后，把 g_SharedBuffer 的物理地址填进去
-            //   (MmGetPhysicalAddress(g_SharedBuffer).QuadPart)。当前 g_SharedBuffer
-            //   恒为 NULL(见 §共享内存 TODO(P9))，上面的 if 已保证走不到这里，
-            //   故此处留 0，避免为一个 P9 才生效的桩去引 ntddk.h 造成头文件冲突。
-            info.PhysicalAddress = 0;
+            info.PhysicalAddress = 0;  // TODO(P9): MmGetPhysicalAddress(g_SharedBuffer).QuadPart
             info.BufferSize = g_SharedBufferSize;
             info.Channels = 2;
             info.SampleRate = 48000;
@@ -226,10 +227,14 @@ static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
         return STATUS_SUCCESS;
     }
 
+    // 不认识的 IOCTL → PortCls
     return g_PortClsDeviceControl(DeviceObject, Irp);
 }
+#pragma code_seg()
 
 // DriverEntry runs exactly once and may stay in the discardable INIT segment.
+// P2 重构：在 PcInitializeAdapterDriver *之后* 保存 PortCls handler 并 hook。
+// handler 内部按 DeviceObject 分流，发到 \\.\AES67IOCTL 的才处理自定义 IOCTL。
 #pragma code_seg("INIT")
 extern "C" DRIVER_INITIALIZE DriverEntry;
 extern "C" NTSTATUS DriverEntry(
@@ -238,19 +243,21 @@ extern "C" NTSTATUS DriverEntry(
 )
 {
     NTSTATUS ntStatus;
-
     DPF(D_TERSE, ("[DriverEntry]"));
-
     GetRegistrySettings(RegistryPathName);
 
     ntStatus = PcInitializeAdapterDriver(DriverObject, RegistryPathName, (PDRIVER_ADD_DEVICE)AddDevice);
 
-    // FIX (P2): 在 PcInitializeAdapterDriver 之后保存 PortCls handler.
-    // 之前在 PcInitializeAdapterDriver 之前保存 → g_PortClsDeviceControl
-    // 拿到的是空默认 handler → audiodg 发送的 IOCTL 被转错 → KS filter
-    // 属性查询失败 → MMDevice 端点不创建 → 系统声音设置里没有虚拟声卡.
+    // ╔══ WARNING ═══════════════════════════════════════════════════╗
+    // ║  下面两行的顺序不可改。g_PortClsDeviceControl 必须在         ║
+    // ║  PcInitializeAdapterDriver **之后** 保存，否则拿不到        ║
+    // ║  PortCls 的真实 handler → 端点不会出现在系统声音设置。     ║
+    // ║  详见 AES67DeviceControl 上方同名 WARNING 框。              ║
+    // ╚══════════════════════════════════════════════════════════════╝
     g_PortClsDeviceControl = DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL];
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = AES67DeviceControl;
+    DPF(D_TERSE, ("[DriverEntry] PortCls handler=%p, our hook=%p",
+        g_PortClsDeviceControl, AES67DeviceControl));
 
     return ntStatus;
 } // DriverEntry
@@ -495,8 +502,6 @@ Return Value:
     }
 
     // 分配共享内存（非分页，用户态可通过 IOCTL 映射访问）
-    // TODO(P9): 目前只是分配+清零的"死缓冲"，内核侧没有写入者。P9 打通主动脉后，
-    //           CSaveData::WriteData() 的 PCM 帧写入这里，用户态引擎映射读取。
     if (NT_SUCCESS(ntStatus) && !g_SharedBuffer) {
         g_SharedBuffer = ExAllocatePool2(POOL_FLAG_NON_PAGED,
             g_SharedBufferSize, AES67_POOLTAG);
@@ -504,6 +509,28 @@ Return Value:
             RtlZeroMemory(g_SharedBuffer, g_SharedBufferSize);
             DPF(D_TERSE, ("[StartDevice] Shared buffer allocated: %p, %lu bytes",
                 g_SharedBuffer, g_SharedBufferSize));
+        }
+    }
+
+    // P2 重构：创建独立 IOCTL 设备 \\.\AES67IOCTL。
+    // 驱动只有一个 DriverObject，MajorFunction 表全局共享；在 handler 里用
+    // DeviceObject == g_IoctlDevice 做运行时判断，自定义 IOCTL 才处理，
+    // 其余全部转发 PortCls。
+    if (NT_SUCCESS(ntStatus) && !g_IoctlDevice) {
+        UNICODE_STRING devName, symLink;
+        RtlInitUnicodeString(&devName, L"\\Device\\AES67IOCTL");
+        RtlInitUnicodeString(&symLink, L"\\DosDevices\\AES67IOCTL");
+        ntStatus = IoCreateDevice(DeviceObject->DriverObject, 0, &devName,
+            FILE_DEVICE_UNKNOWN, 0, FALSE, &g_IoctlDevice);
+        if (NT_SUCCESS(ntStatus)) {
+            ntStatus = IoCreateSymbolicLink(&symLink, &devName);
+            if (NT_SUCCESS(ntStatus)) {
+                DPF(D_TERSE, ("[StartDevice] IOCTL device ready: \\\\.\\AES67IOCTL"));
+            } else {
+                DPF(D_TERSE, ("[StartDevice] IoCreateSymbolicLink failed: 0x%08X", ntStatus));
+            }
+        } else {
+            DPF(D_TERSE, ("[StartDevice] IoCreateDevice for IOCTL failed: 0x%08X", ntStatus));
         }
     }
 
