@@ -30,17 +30,13 @@ static void PrintUsage() {
     puts("Usage: aes67_engine.exe [options]");
     puts("");
     puts("Options:");
-    puts("  -c, --channels N     Channel count (default 2)");
-    puts("  -r, --rate N         Sample rate in Hz (default 48000)");
-    puts("  -b, --bits N         Bits per sample: 16, 24, 32 (default 24)");
     puts("  -d, --duration N     Run duration in seconds, 0 = indefinite (default 10)");
-    puts("  -p, --period N       Buffer period in microseconds (default 100000 = 10ms)");
     puts("  -l, --log FILE       Log file path");
     puts("      --no-autostart   Panel-hosted mode: init + listen, wait for panel START");
     puts("      --managed        Alias of --no-autostart");
     puts("  -h, --help           Show this help");
     puts("");
-    puts("Network (AES67 Transmit):");
+    puts("Audio: L24 / 48kHz / 2ch / ptime=1ms (AES67 locked)");
     puts("  --dest ADDR          RTP destination IP (default 239.69.1.128)");
     puts("  --port N             RTP destination port (default 5004)");
     puts("  --no-tx              Disable AES67 transmit (capture only)");
@@ -77,25 +73,9 @@ static CmdLineArgs ParseArgs(int argc, wchar_t* argv[]) {
             return nullptr;
         };
 
-        if (wcscmp(arg, L"-c") == 0 || wcscmp(arg, L"--channels") == 0) {
-            auto* v = nextVal(L"channels");
-            if (v) args.config.channels = (UINT16)_wtoi(v);
-        }
-        else if (wcscmp(arg, L"-r") == 0 || wcscmp(arg, L"--rate") == 0) {
-            auto* v = nextVal(L"rate");
-            if (v) args.config.sampleRate = (UINT32)_wtoi(v);
-        }
-        else if (wcscmp(arg, L"-b") == 0 || wcscmp(arg, L"--bits") == 0) {
-            auto* v = nextVal(L"bits");
-            if (v) args.config.bitsPerSample = (UINT16)_wtoi(v);
-        }
-        else if (wcscmp(arg, L"-d") == 0 || wcscmp(arg, L"--duration") == 0) {
+        if (wcscmp(arg, L"-d") == 0 || wcscmp(arg, L"--duration") == 0) {
             auto* v = nextVal(L"duration");
             if (v) args.config.durationSec = (UINT32)_wtoi(v);
-        }
-        else if (wcscmp(arg, L"-p") == 0 || wcscmp(arg, L"--period") == 0) {
-            auto* v = nextVal(L"period");
-            if (v) args.config.periodUs = (UINT32)_wtoi(v);
         }
         else if (wcscmp(arg, L"-l") == 0 || wcscmp(arg, L"--log") == 0) {
             auto* v = nextVal(L"log");
@@ -171,26 +151,10 @@ int wmain(int argc, wchar_t* argv[]) {
 
     CmdLineArgs args = ParseArgs(argc, argv);
 
-    // Validate
-    if (args.config.bitsPerSample != 16 && args.config.bitsPerSample != 24 &&
-        args.config.bitsPerSample != 32) {
-        Logger::Instance().Error("Invalid bits per sample: %u (must be 16, 24, or 32)",
-            args.config.bitsPerSample);
-        return 1;
-    }
-    if (args.config.channels < 1 || args.config.channels > 8) {
-        Logger::Instance().Error("Invalid channel count: %u (must be 1-8)",
-            args.config.channels);
-        return 1;
-    }
-
-    // Log configuration
-    Logger::Instance().Info("AES67 Audio Engine M4 - Loopback Capture");
-    Logger::Instance().Info("  Channels:    %u", args.config.channels);
-    Logger::Instance().Info("  Sample rate: %u Hz", args.config.sampleRate);
-    Logger::Instance().Info("  Bit depth:   %u-bit", args.config.bitsPerSample);
+    // Log configuration (format locked to AES67: L24/48kHz/2ch/ptime=1ms)
+    Logger::Instance().Info("AES67 Audio Engine - P3 (format locked)");
+    Logger::Instance().Info("  Format:      L24 / 48kHz / 2ch / ptime=1ms");
     Logger::Instance().Info("  Duration:    %u s (0=indefinite)", args.config.durationSec);
-    Logger::Instance().Info("  Period:      %u us", args.config.periodUs);
     if (args.logFile) {
         Logger::Instance().Info("  Log file:    %s", WideToNarrow(args.logFile).c_str());
     }
@@ -225,8 +189,7 @@ int wmain(int argc, wchar_t* argv[]) {
         DWORD overflows = stats.bufferOverflows.load(std::memory_order_relaxed);
 
         float activePct = total > 0 ? (100.0f * active / total) : 0.0f;
-        float runtimeSec = args.config.sampleRate > 0
-            ? (float)total / (float)(args.config.sampleRate * args.config.channels)
+        float runtimeSec = (float)total / (float)(48000 * 2)
             : 0.0f;
 
         Logger::Instance().Info("--- Final ---");
