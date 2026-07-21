@@ -14,7 +14,7 @@ SapAnnouncer::~SapAnnouncer() {
     if (m_stopEvent) CloseHandle(m_stopEvent);
 }
 
-bool SapAnnouncer::InitSocket(const char* mcastAddr, uint16_t sapPort) {
+bool SapAnnouncer::InitSocket(uint16_t sapPort) {
     m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (m_socket == INVALID_SOCKET) {
         Logger::Instance().Error("SAP socket() failed: %d", WSAGetLastError());
@@ -24,11 +24,14 @@ bool SapAnnouncer::InitSocket(const char* mcastAddr, uint16_t sapPort) {
     DWORD ttl = 32;
     setsockopt(m_socket, IPPROTO_IP, IP_MULTICAST_TTL, (const char*)&ttl, sizeof(ttl));
 
+    // SAP destination is always the standard SAP multicast group, not the RTP address.
+    // The RTP address goes in the SDP c= line, not the packet destination.
+    const char* sapMcast = "239.255.255.255";
     m_sapDest.sin_family = AF_INET;
     m_sapDest.sin_port = htons(sapPort);
-    inet_pton(AF_INET, mcastAddr, &m_sapDest.sin_addr);
+    inet_pton(AF_INET, sapMcast, &m_sapDest.sin_addr);
 
-    Logger::Instance().Info("SAP socket ready: %s:%u", mcastAddr, sapPort);
+    Logger::Instance().Info("SAP socket ready: %s:%u", sapMcast, sapPort);
     return true;
 }
 
@@ -48,7 +51,7 @@ bool SapAnnouncer::Start(uint32_t ssrc, uint16_t rtpPort, const AudioConfig& con
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
-    if (!InitSocket(mcastAddr, sapPort)) {
+    if (!InitSocket(sapPort)) {
         WSACleanup();
         return false;
     }

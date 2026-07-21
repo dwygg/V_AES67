@@ -189,8 +189,7 @@ int wmain(int argc, wchar_t* argv[]) {
         DWORD overflows = stats.bufferOverflows.load(std::memory_order_relaxed);
 
         float activePct = total > 0 ? (100.0f * active / total) : 0.0f;
-        float runtimeSec = (float)total / (float)(48000 * 2)
-            : 0.0f;
+        float runtimeSec = (float)total / (float)(48000 * 2);
 
         Logger::Instance().Info("--- Final ---");
         Logger::Instance().Info("Total frames:   %lu (%.1f s of audio)", total, runtimeSec);

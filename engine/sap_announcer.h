@@ -26,7 +26,7 @@ public:
 private:
     static DWORD WINAPI ThreadProc(LPVOID param);
     void RunLoop();
-    bool InitSocket(const char* mcastAddr, uint16_t sapPort);
+    bool InitSocket(uint16_t sapPort);
     std::string BuildSdp() const;
     void SendAnnouncement();
 
