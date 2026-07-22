@@ -7,10 +7,14 @@
 #include "audio_config.h"
 
 class RingBuffer;
+class MixingBus;
 
 // RTP packetizer + high-precision UDP multicast sender.
-// Wakes every 1ms via CreateWaitableTimerEx, reads 288 bytes (48 frames × 2ch × 3 bytes L24)
-// from the ring buffer, wraps in RTP header (12 bytes), and sends via sendto().
+// Reads 288 bytes (48 frames × 2ch × 3 bytes L24) from the ring buffer,
+// wraps in RTP header (12 bytes), and sends via sendto().
+//
+// P5: when a MixingBus is provided, Process() is called on m_ringBuffer first,
+// then packets are read from the MixingBus's per-stream output buffers.
 class NetworkThread {
 public:
     NetworkThread();
@@ -20,8 +24,11 @@ public:
     NetworkThread& operator=(const NetworkThread&) = delete;
 
     // Start RTP transmission. ringBuffer / config must outlive the thread.
+    // mixingBus (optional, P5): if provided, data flows through MixingBus::Process()
+    // before being read from per-stream output buffers.
     bool Start(RingBuffer* ringBuffer, const AudioConfig& config,
-               const char* destAddr, uint16_t destPort);
+               const char* destAddr, uint16_t destPort,
+               MixingBus* mixingBus = nullptr, int streamIndex = 0);
     void Stop();
 
     bool IsRunning() const { return m_running.load(std::memory_order_acquire); }
@@ -38,6 +45,8 @@ private:
     void BuildRtpHeader();
 
     RingBuffer*     m_ringBuffer  = nullptr;
+    MixingBus*      m_mixingBus   = nullptr;  // P5: optional mixing bus
+    int             m_streamIndex = 0;        // P5: which output stream to send
     AudioConfig     m_config;
 
     HANDLE          m_thread      = nullptr;

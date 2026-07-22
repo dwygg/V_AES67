@@ -16,6 +16,8 @@
 #include "ptp_clock.h"
 #include "ptp_thread.h"
 #include "pipe_server.h"
+#include "routing.h"
+#include "mixing_bus.h"
 
 // ---- Network defaults ----
 constexpr char     kDefaultMulticastAddr[] = "239.69.1.128";
@@ -108,7 +110,7 @@ private:
     std::atomic<bool>        m_startAudioRequested = false;  // P2: START audio, deferred to engine thread (Start() may block)
     std::atomic<bool>        m_stopAudioRequested = false;   // M9-1: STOP audio, keep process+pipe alive
     std::atomic<bool>        m_reconfigRequested = false;    // M9-3: SET changed net config -> rebuild sockets on engine thread
-    std::atomic<ULONGLONG>   m_lastPipeActivity{0};          // P3: GetTickCount64 when last pipe command received
+    std::atomic<ULONGLONG>   m_lastPipeActivity{GetTickCount64()};  // P3: GetTickCount64 when last pipe command received
     static constexpr ULONGLONG kPipeHeartbeatTimeoutMs = 3000; // P3: 3s without pipe command → panel disconnected
 
     // M9-3 (P2): rebuild network TX/RX sockets to apply new dest/source addr+port
@@ -130,6 +132,12 @@ private:
     // M7 PTP clock synchronization
     PtpClock           m_ptpClock;
     PtpThread          m_ptpThread;
+
+    // P4 routing contract
+    RoutingTable       m_routing;
+
+    // P5 mixing bus (created in Initialize after config is valid)
+    MixingBus*         m_mixingBus = nullptr;
 
     // M9 IPC
     PipeServer         m_pipeServer;

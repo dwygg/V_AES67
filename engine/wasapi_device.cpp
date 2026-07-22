@@ -143,7 +143,7 @@ HRESULT WasapiClient::InitLoopback(IMMDevice* device, const AudioConfig& config)
     hr = m_client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         streamFlags,
-        config.periodHns, 0,
+        0, 0,  // let WASAPI pick default engine period (not config.periodHns)
         reinterpret_cast<WAVEFORMATEX*>(&wf), nullptr);
 
     if (FAILED(hr)) {
@@ -203,7 +203,7 @@ HRESULT WasapiClient::InitRender(IMMDevice* device, const AudioConfig& config) {
     hr = m_client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         streamFlags,
-        config.periodHns, 0,
+        0, 0,  // let WASAPI pick default engine period (not config.periodHns)
         reinterpret_cast<WAVEFORMATEX*>(&wf), nullptr);
 
     if (FAILED(hr)) {

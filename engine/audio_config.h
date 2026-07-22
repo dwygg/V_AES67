@@ -9,8 +9,11 @@ constexpr UINT32 kDefaultSampleRate    = 48000;
 constexpr UINT16 kDefaultBitsPerSample = 24;
 constexpr UINT16 kDefaultChannels      = 2;
 constexpr UINT32 kDefaultDurationSec   = 10;           // 0 = indefinite
-constexpr UINT32 kDefaultPeriodUs      = 1000;         // AES67 ptime=1ms (48 samples @48kHz)
-constexpr UINT32 kDefaultPeriodHns     = kDefaultPeriodUs * 10; // 10,000 hns = 1ms
+// WASAPI shared-mode buffer period (10ms = 480 frames @48kHz).
+// AES67 ptime=1ms is handled by NetworkThread independently
+// (always sends 48-frame RTP packets at 1000 Hz — ring buffer decouples rates).
+constexpr UINT32 kDefaultPeriodUs      = 10000;        // 10ms WASAPI period
+constexpr UINT32 kDefaultPeriodHns     = kDefaultPeriodUs * 10; // 100,000 hns = 10ms
 
 constexpr UINT32 kEngineStatusIntervalMs = 1000;       // stats print interval
 

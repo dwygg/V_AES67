@@ -111,6 +111,13 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
         }
     }
 
+    // P4: Load routing table (falls back to defaults if file missing)
+    m_routing.LoadFromFile("routing.json");
+
+    // P5: Initialize mixing bus with routing table
+    m_mixingBus = new MixingBus(m_routing, m_config);
+    m_mixingBus->Initialize();
+
     // M9: Set up IPC command handler
     m_pipeServer.SetHandler([this](const std::string& cmd, const std::string& arg) -> std::string {
         // P3 heartbeat: any command from panel resets the disconnect timer
@@ -169,6 +176,15 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
             m_reconfigRequested.store(true, std::memory_order_release);
             return m_state == EngineState::Running ? "OK reconfiguring" : "OK";
         }
+        // P4: routing table queries
+        if (cmd == "GET_ROUTING") { return m_routing.ToJson(); }
+        if (cmd == "SET_ROUTING") {
+            std::ofstream f("routing.json");
+            f << arg;
+            f.close();
+            m_routing.LoadFromFile("routing.json");
+            return "OK";
+        }
         if (cmd == "EXIT") { SignalStop(); return "OK"; }
         return "ERR unknown command";
     });
@@ -225,11 +241,12 @@ bool Aes67Engine::Start() {
         }
     }
 
-    // M5: Start network transmit
+    // M5: Start network transmit (P5: always through MixingBus)
     if (m_netConfig.enableTx) {
         if (!m_networkThread.Start(&m_ringBuffer, m_config,
                                    m_netConfig.destAddr.c_str(),
-                                   m_netConfig.destPort)) {
+                                   m_netConfig.destPort,
+                                   m_mixingBus, 0)) {
             Logger::Instance().Error("Failed to start network thread");
             m_thread.Stop();
             return false;
@@ -314,7 +331,8 @@ void Aes67Engine::ApplyNetworkReconfig() {
         m_networkThread.Stop();
         if (!m_networkThread.Start(&m_ringBuffer, m_config,
                                    m_netConfig.destAddr.c_str(),
-                                   m_netConfig.destPort)) {
+                                   m_netConfig.destPort,
+                                   m_mixingBus, 0)) {
             Logger::Instance().Error("Reconfig: TX network restart failed");
         } else if (!m_sapAnnouncer.Start(m_networkThread.GetSSRC(),
                                          m_netConfig.destPort, m_config,
@@ -360,6 +378,8 @@ void Aes67Engine::Shutdown() {
     // M9-2 (P2): pipe server is torn down here (not in Stop()). Safe: Shutdown() is
     // called from the engine/main thread, never from the pipe thread.
     m_pipeServer.Stop();
+    // P5: cleanup mixing bus
+    if (m_mixingBus) { delete m_mixingBus; m_mixingBus = nullptr; }
     // WasapiClient dtor calls Stop/Reset
     // ComPtr dtor releases interfaces
     // ComInitializer dtor calls CoUninitialize
@@ -432,9 +452,9 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
             ApplyNetworkReconfig();
         }
 
-        // P3 heartbeat: panel sends STATUS every ~1s; if no command for >3s,
-        // treat as disconnected and auto-stop audio (process+pipe stay alive).
-        if (m_state == EngineState::Running) {
+        // P3 heartbeat: only in panel-hosted mode (autoStart=false).
+        // CLI mode has no panel, so don't auto-stop on heartbeat timeout.
+        if (!config.autoStart && m_state == EngineState::Running) {
             ULONGLONG idleMs = GetTickCount64()
                 - m_lastPipeActivity.load(std::memory_order_relaxed);
             if (idleMs > kPipeHeartbeatTimeoutMs) {
@@ -487,8 +507,8 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
                 case PtpState::HOLDOVER:  ptpState = "HOLD"; break;
             }
         }
-        Logger::Instance().Info("[%3us] cap=%lu fps=%lu gl=%lu | tx=%llu ovf=%lu | rx=%llu jb=%zu rend=%lu | ptp=%s %.0fns",
-            elapsed, total, fps, glitches,
+        Logger::Instance().Info("[%3us] cap=%lu act=%lu fps=%lu gl=%lu | tx=%llu ovf=%lu | rx=%llu jb=%zu rend=%lu | ptp=%s %.0fns",
+            elapsed, total, (DWORD)m_stats.nonSilentFrames.load(std::memory_order_relaxed), fps, glitches,
             pktsTx, overflows, pktsRx, jbAvail, rendFrames, ptpState, ptpOff);
 
         lastTotalFrames = total;

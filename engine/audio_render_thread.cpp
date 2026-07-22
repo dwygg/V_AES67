@@ -71,18 +71,19 @@ DWORD WINAPI AudioRenderThread::ThreadProc(LPVOID param) {
 }
 
 void AudioRenderThread::RunLoop() {
-    // 1. MMCSS Pro Audio
-    DWORD taskIndex = 0;
-    HANDLE hMmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
-    if (!hMmcss) {
-        Logger::Instance().Warn("RX AvSetMmThreadCharacteristics failed: %lu", GetLastError());
-    }
+    // 1. MMCSS disabled on render thread: two MMCSS Pro Audio threads
+    //    (capture + render) cause an access violation on some systems.
+    //    The capture thread already runs under MMCSS Pro Audio for low-latency;
+    //    the render thread is driven by WASAPI events and doesn't need it.
+    HANDLE hMmcss = nullptr;
 
     // 2. Event-driven setup
     HANDLE hAudioEvent = nullptr;
     if (m_client.IsEventDriven()) {
         hAudioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        m_client.SetEventHandle(hAudioEvent);
+        if (FAILED(m_client.SetEventHandle(hAudioEvent))) {
+            Logger::Instance().Error("RX SetEventHandle failed");
+        }
     }
 
     // 3. Warm-up: wait for jitter buffer to fill
@@ -99,16 +100,28 @@ void AudioRenderThread::RunLoop() {
     HRESULT hr = m_client.Start();
     if (FAILED(hr)) {
         Logger::Instance().Error("RX render Start() failed: 0x%08X", hr);
-        if (hMmcss) AvRevertMmThreadCharacteristics(hMmcss);
         if (hAudioEvent) CloseHandle(hAudioEvent);
         return;
     }
 
     IAudioRenderClient* render = m_client.GetRender();
-    UINT32 periodFrames = m_client.GetPeriodFrames();
-    UINT16 blockAlign = m_config.blockAlign;
-    size_t periodBytes = (size_t)periodFrames * blockAlign;
-    size_t packetsPerPeriod = periodFrames / 48;  // 480 frames / 48 = 10 packets
+    // P5 fix: use actual WASAPI buffer size (e.g. 1056 frames) instead of config
+    // period (48 frames).  Using the config value filled only 48/1056 = 4.5% of
+    // the buffer per period, causing crackle / silence.
+    UINT32 bufferFrames = m_client.GetBufferFrames();
+    // Mix format blockAlign (float32 = 8) vs our L24 config blockAlign (6)
+    UINT16 mixBlockAlign = m_client.GetWaveFormat().Format.nBlockAlign;
+    UINT16 configBlockAlign = m_config.blockAlign;
+    bool renderFloat = (m_client.GetWaveFormat().SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+    static constexpr UINT32 kFramesPerJitterPacket = 48;  // 48 frames @ 1ms AES67 ptime
+
+    // Allocate int24→float32 conversion buffer (worst case: full buffer)
+    BYTE* convBuf = nullptr;
+    size_t convBufSize = 0;
+    if (renderFloat) {
+        convBufSize = (size_t)bufferFrames * m_config.channels * sizeof(float);
+        convBuf = new BYTE[convBufSize];
+    }
 
     HANDLE waitHandles[2] = { hAudioEvent, m_stopEvent };
     DWORD waitCount = hAudioEvent ? 2 : 1;
@@ -123,37 +136,60 @@ void AudioRenderThread::RunLoop() {
             if (WaitForSingleObject(m_stopEvent, 5) == WAIT_OBJECT_0) break;
         }
 
-        // Get render buffer
+        // Get render buffer — use actual WASAPI buffer size, not config period
         UINT32 padding;
         m_client.GetClient()->GetCurrentPadding(&padding);
-        UINT32 avail = periodFrames - padding;
-        if (avail == 0) continue;
+        UINT32 availFrames = bufferFrames - padding;
+        if (availFrames == 0) continue;
 
         BYTE* pData;
-        hr = render->GetBuffer(avail, &pData);
+        hr = render->GetBuffer(availFrames, &pData);
         if (FAILED(hr)) {
             m_stats->glitchCount.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
-        // Fill from jitter buffer
-        size_t bytesNeeded = (size_t)avail * blockAlign;
-        size_t bytesWritten = 0;
+        // Fill from jitter buffer: compute EXACT packet count from frame count.
+        // Old code used bytesNeeded from float32 blockAlign (8) → over-read
+        // (480×8÷288=13 instead of 480÷48=10).
+        UINT32 fullPackets = availFrames / kFramesPerJitterPacket;
+        UINT32 remainderFrames = availFrames % kFramesPerJitterPacket;
 
-        // Read in 288-byte (1ms) chunks from jitter buffer
-        while (bytesWritten + JitterBuffer::kPayloadSize <= bytesNeeded) {
-            m_jitter->Read(pData + bytesWritten);
-            bytesWritten += JitterBuffer::kPayloadSize;
+        for (UINT32 i = 0; i < fullPackets; i++) {
+            m_jitter->Read(pData + (size_t)i * JitterBuffer::kPayloadSize);
+        }
+        size_t bytesWritten = (size_t)fullPackets * JitterBuffer::kPayloadSize;
+
+        // Handle remainder frames: read one more packet, use partial data
+        if (remainderFrames > 0) {
+            BYTE temp[JitterBuffer::kPayloadSize];
+            m_jitter->Read(temp);
+            size_t remainderBytes = (size_t)remainderFrames * configBlockAlign;
+            memcpy(pData + bytesWritten, temp, remainderBytes);
+            bytesWritten += remainderBytes;
         }
 
-        // Pad any remainder with silence
-        if (bytesWritten < bytesNeeded) {
-            memset(pData + bytesWritten, 0, bytesNeeded - bytesWritten);
+        // Pad any remaining space (float32 render buffer > L24 jitter data)
+        size_t floatBufSize = (size_t)availFrames * mixBlockAlign;
+        if (bytesWritten < floatBufSize) {
+            memset(pData + bytesWritten, 0, floatBufSize - bytesWritten);
         }
 
-        hr = render->ReleaseBuffer(avail, 0);
+        // Shared-mode WASAPI expects float32 → convert int24→float from pData
+        if (renderFloat && availFrames > 0) {
+            size_t samples = (size_t)availFrames * m_config.channels;
+            for (size_t s = 0; s < samples; s++) {
+                int val = (pData[s * 3] & 0xFF) | ((pData[s * 3 + 1] & 0xFF) << 8)
+                        | ((int8_t)pData[s * 3 + 2] << 16);
+                float f = (float)val / 8388608.0f;
+                memcpy(convBuf + s * sizeof(float), &f, sizeof(float));
+            }
+            memcpy(pData, convBuf, samples * sizeof(float));
+        }
+
+        hr = render->ReleaseBuffer(availFrames, 0);
         if (SUCCEEDED(hr)) {
-            m_stats->totalFrames.fetch_add(avail, std::memory_order_relaxed);
+            m_stats->totalFrames.fetch_add(availFrames, std::memory_order_relaxed);
         } else {
             m_stats->glitchCount.fetch_add(1, std::memory_order_relaxed);
         }
@@ -163,7 +199,7 @@ void AudioRenderThread::RunLoop() {
     m_client.Stop();
     m_client.Reset();
     if (hAudioEvent) CloseHandle(hAudioEvent);
-    if (hMmcss) AvRevertMmThreadCharacteristics(hMmcss);
+    if (convBuf) delete[] convBuf;
 
     Logger::Instance().Info("RX render thread stopped. Total frames: %lu",
         m_stats->totalFrames.load(std::memory_order_relaxed));

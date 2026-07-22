@@ -1,0 +1,13 @@
+{
+  "destinations": [
+    {
+      "name": "AES67 Stream 1",
+      "address": "239.69.1.128",
+      "port": 5004
+    }
+  ],
+  "routes": [
+    {"source": 0, "destination": 0, "gain": 1.0, "mute": false},
+    {"source": 1, "destination": 0, "gain": 1.0, "mute": false}
+  ]
+}

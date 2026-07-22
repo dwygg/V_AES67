@@ -1,5 +1,6 @@
 #include "network_thread.h"
 #include "ring_buffer.h"
+#include "mixing_bus.h"
 #include "logger.h"
 #include <ctime>
 #include <cstdlib>
@@ -43,13 +44,16 @@ bool NetworkThread::InitSocket(const char* destAddr, uint16_t destPort) {
 }
 
 bool NetworkThread::Start(RingBuffer* ringBuffer, const AudioConfig& config,
-                          const char* destAddr, uint16_t destPort) {
+                          const char* destAddr, uint16_t destPort,
+                          MixingBus* mixingBus, int streamIndex) {
     if (m_running.load(std::memory_order_acquire)) return false;
     if (!ringBuffer || !destAddr) return false;
 
     m_config = config;
     m_config.Init();
     m_ringBuffer = ringBuffer;
+    m_mixingBus   = mixingBus;    // P5: optional mixing bus
+    m_streamIndex = streamIndex;  // P5: which output stream
 
     // Compute RTP payload parameters
     m_periodFrames = m_config.sampleRate / 1000;   // 48 frames @ 48kHz for 1ms
@@ -142,13 +146,26 @@ void NetworkThread::RunLoop() {
     size_t totalSize = 12 + m_payloadSize;
 
     while (m_running.load(std::memory_order_acquire)) {
+        // P5: if MixingBus is active, process raw input through it first.
+        // This distributes audio to per-stream ring buffers per the routing table.
+        // We then read from our assigned stream's output buffer.
+        RingBuffer* readBuf = m_ringBuffer;
+        if (m_mixingBus && m_mixingBus->StreamCount() > 0) {
+            // Drain all available input through the mixing bus in 1ms chunks
+            while (m_ringBuffer->AvailableRead() >= m_payloadSize) {
+                m_mixingBus->Process(*m_ringBuffer, m_periodFrames);
+            }
+            readBuf = m_mixingBus->GetStreamBuffer((size_t)m_streamIndex);
+            if (!readBuf) readBuf = m_ringBuffer;  // fallback to direct
+        }
+
         // Drain ring buffer: read all available data, send complete packets
         bool sentAny = false;
         for (;;) {
-            size_t available = m_ringBuffer->AvailableRead();
+            size_t available = readBuf->AvailableRead();
             if (available < m_payloadSize) break;  // not enough for a full packet
 
-            size_t read = m_ringBuffer->Read(m_payloadBuf, m_payloadSize);
+            size_t read = readBuf->Read(m_payloadBuf, m_payloadSize);
             if (read < m_payloadSize) break;
 
             BuildRtpHeader();
