@@ -2,6 +2,8 @@
 #include "jitter_buffer.h"
 #include "logger.h"
 #include <avrt.h>
+#include <excpt.h>
+#include <cstdio>
 
 #pragma comment(lib, "avrt.lib")
 
@@ -82,7 +84,9 @@ void AudioRenderThread::RunLoop() {
     if (m_client.IsEventDriven()) {
         hAudioEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (FAILED(m_client.SetEventHandle(hAudioEvent))) {
-            Logger::Instance().Error("RX SetEventHandle failed");
+            Logger::Instance().Error("RX SetEventHandle failed — falling back to polling");
+            CloseHandle(hAudioEvent);
+            hAudioEvent = nullptr;
         }
     }
 
@@ -126,7 +130,8 @@ void AudioRenderThread::RunLoop() {
     HANDLE waitHandles[2] = { hAudioEvent, m_stopEvent };
     DWORD waitCount = hAudioEvent ? 2 : 1;
 
-    // 5. Render loop
+    // 5. Render loop (SEH: catch intermittent access violations in WASAPI)
+    __try {
     while (m_running.load(std::memory_order_acquire)) {
         if (hAudioEvent) {
             DWORD result = WaitForMultipleObjects(waitCount, waitHandles, FALSE, 5);
@@ -193,6 +198,10 @@ void AudioRenderThread::RunLoop() {
         } else {
             m_stats->glitchCount.fetch_add(1, std::memory_order_relaxed);
         }
+    }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        printf("RX render CRASH! Exception 0x%08X\n", GetExceptionCode());
+        fflush(stdout);
     }
 
     // 6. Cleanup

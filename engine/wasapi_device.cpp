@@ -154,7 +154,7 @@ HRESULT WasapiClient::InitLoopback(IMMDevice* device, const AudioConfig& config)
         hr = m_client->Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             streamFlags,
-            config.periodHns, 0,
+            0, 0,  // let WASAPI pick default engine period
             reinterpret_cast<WAVEFORMATEX*>(&wf), nullptr);
     } else {
         m_eventDriven = true;
@@ -214,7 +214,7 @@ HRESULT WasapiClient::InitRender(IMMDevice* device, const AudioConfig& config) {
         hr = m_client->Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             streamFlags,
-            config.periodHns, 0,
+            0, 0,  // let WASAPI pick default engine period
             reinterpret_cast<WAVEFORMATEX*>(&wf), nullptr);
     } else {
         m_eventDriven = true;
@@ -240,8 +240,11 @@ HRESULT WasapiClient::InitRender(IMMDevice* device, const AudioConfig& config) {
 }
 
 HRESULT WasapiClient::SetEventHandle(HANDLE hEvent) {
-    if (!m_eventDriven) return S_FALSE;  // Not event-driven, no-op
     if (!m_client.Get()) return E_POINTER;
+    // P6 fix: after Stop/Reset, WASAPI requires clearing the old event
+    // with SetEventHandle(NULL) before setting a new one.
+    // Always clear first if setting a non-NULL handle.
+    if (hEvent) m_client->SetEventHandle(nullptr);
     return m_client->SetEventHandle(hEvent);
 }
 
