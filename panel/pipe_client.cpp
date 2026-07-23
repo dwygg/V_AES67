@@ -5,59 +5,101 @@
 PipeClient::PipeClient() = default;
 PipeClient::~PipeClient() = default;
 
-std::string PipeClient::SendCommand(const std::string& cmd) {
-    // P2 fix: retry on ERROR_PIPE_BUSY. The server serves one instance at a time
-    // and there is a brief window between CreateNamedPipe calls where no instance
-    // is available; without a retry a click could "do nothing". Try up to ~1s.
+// Connect to the named pipe with a bounded retry loop.
+// Returns INVALID_HANDLE_VALUE on failure; *outErr gets the last OS error.
+static HANDLE ConnectWithRetry(DWORD timeoutMs, DWORD* outErr) {
     HANDLE h = INVALID_HANDLE_VALUE;
-    DWORD lastErr = 0;
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        h = CreateFileW(kPipeName,
+    DWORD deadline = GetTickCount() + timeoutMs;
+
+    for (;;) {
+        h = CreateFileW(PipeClient::kPipeName,
             GENERIC_READ | GENERIC_WRITE,
             0, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (h != INVALID_HANDLE_VALUE) break;
+        if (h != INVALID_HANDLE_VALUE) return h;
 
-        lastErr = GetLastError();
-        if (lastErr == ERROR_PIPE_BUSY) {
-            // Wait for an instance to become available, then retry.
-            WaitNamedPipeW(kPipeName, 100);
-            continue;
-        }
-        if (lastErr == ERROR_ACCESS_DENIED) {
-            // Transient race: the server instance exists but is mid-teardown /
-            // not yet in a pending-accept state. A short backoff clears it.
+        DWORD err = GetLastError();
+        *outErr = err;
+
+        // Only retry on transient states; give up on hard errors.
+        if (err == ERROR_PIPE_BUSY) {
+            if (!WaitNamedPipeW(PipeClient::kPipeName, 100)) continue;
+        } else if (err == ERROR_ACCESS_DENIED || err == ERROR_FILE_NOT_FOUND) {
             Sleep(50);
-            continue;
+        } else {
+            return INVALID_HANDLE_VALUE;  // hard error
         }
-        if (lastErr == ERROR_FILE_NOT_FOUND) {
-            // Server not up yet (or between instances) — brief backoff + retry.
-            Sleep(50);
-            continue;
-        }
-        char buf[64];
-        snprintf(buf, sizeof(buf), "ERR CreateFile: %lu", lastErr);
-        return buf;  // other errors: report for display
+
+        if (GetTickCount() >= deadline) return INVALID_HANDLE_VALUE;
     }
+}
+
+// Overlapped read with timeout. Returns true on success, false on timeout/error.
+// On success *bytesRead holds the count; caller must ensure buf has room.
+static bool ReadWithTimeout(HANDLE h, void* buf, DWORD len, DWORD* bytesRead,
+                            DWORD timeoutMs) {
+    OVERLAPPED ov = {};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
+
+    BOOL ok = ReadFile(h, buf, len, nullptr, &ov);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        CloseHandle(ov.hEvent);
+        return false;
+    }
+    if (ok) {
+        // Completed synchronously (unlikely on a pipe, but handle it).
+        GetOverlappedResult(h, &ov, bytesRead, FALSE);
+        CloseHandle(ov.hEvent);
+        return true;
+    }
+
+    // Wait for completion or timeout.
+    DWORD wait = WaitForSingleObject(ov.hEvent, timeoutMs);
+    if (wait == WAIT_OBJECT_0) {
+        ok = GetOverlappedResult(h, &ov, bytesRead, FALSE);
+        CloseHandle(ov.hEvent);
+        return ok != FALSE;
+    }
+
+    // Timeout — cancel the pending I/O.
+    CancelIoEx(h, &ov);
+    WaitForSingleObject(ov.hEvent, INFINITE);  // drain the cancelled completion
+    CloseHandle(ov.hEvent);
+    return false;
+}
+
+std::string PipeClient::SendCommand(const std::string& cmd, DWORD timeoutMs) {
+    if (timeoutMs == 0) timeoutMs = kDefaultTimeout;
+
+    DWORD err = 0;
+    HANDLE h = ConnectWithRetry(timeoutMs, &err);
     if (h == INVALID_HANDLE_VALUE) {
-        // Gave up after all retries. Do NOT swallow the reason — surface the last
-        // error code so we can see whether it's 2 (not found), 5 (access denied),
-        // 231 (all instances busy), etc. instead of a blank "Command failed:".
         char buf[64];
-        snprintf(buf, sizeof(buf), "ERR connect: %lu (retries exhausted)", lastErr);
+        snprintf(buf, sizeof(buf), "ERR connect: %lu", err);
         return buf;
     }
 
-    // Ensure message-mode read so a single ReadFile returns the whole reply.
+    // Message-mode read so a single ReadFile returns the whole reply.
     DWORD mode = PIPE_READMODE_MESSAGE;
     SetNamedPipeHandleState(h, &mode, nullptr, nullptr);
 
     std::string fullCmd = cmd + "\n";
     DWORD written = 0;
-    WriteFile(h, fullCmd.c_str(), (DWORD)fullCmd.size(), &written, nullptr);
+    if (!WriteFile(h, fullCmd.c_str(), (DWORD)fullCmd.size(), &written, nullptr)) {
+        DWORD we = GetLastError();
+        CloseHandle(h);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "ERR write: %lu", we);
+        return buf;
+    }
 
-    char buf[4096] = {};
+    DWORD remaining = timeoutMs;
+    char buf[8192] = {};  // match server-side arg buffer size
     DWORD read = 0;
-    ReadFile(h, buf, sizeof(buf) - 1, &read, nullptr);
+    if (!ReadWithTimeout(h, buf, sizeof(buf) - 1, &read, remaining)) {
+        CloseHandle(h);
+        return "";  // timeout → empty, caller shows "Disconnected"
+    }
     CloseHandle(h);
 
     if (read == 0) return "";
@@ -67,6 +109,12 @@ std::string PipeClient::SendCommand(const std::string& cmd) {
     while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
         result.pop_back();
     return result;
+}
+
+std::string PipeClient::PollStatus(DWORD timeoutMs) {
+    // Fast path: check connectivity first so we don't waste time in the retry loop.
+    if (!IsConnected()) return "";
+    return SendCommand("STATUS", timeoutMs);
 }
 
 bool PipeClient::IsConnected() const {

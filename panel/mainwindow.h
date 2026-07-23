@@ -11,6 +11,13 @@
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QCloseEvent>
+#include <QTableWidget>
+#include <QSlider>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 #include "pipe_client.h"
 
@@ -27,6 +34,10 @@ private slots:
     void refreshStatus();
     void onStartStop();
     void onApplySettings();
+    void onRefreshRouting();
+    void onApplyRouting();
+    void onAddDestination();
+    void onAddRoute();
 
 private:
     void setupUi();
@@ -52,6 +63,12 @@ private:
 
     // Controls
     QPushButton* m_btnStartStop;
+
+    // ---- Routing tab ----
+    void buildRoutingFromJson(const QJsonDocument& doc);
+    QJsonDocument buildRoutingJson() const;
+    QTableWidget* m_destTable;
+    QTableWidget* m_routeTable;
 
     // Tray
     QSystemTrayIcon* m_tray;

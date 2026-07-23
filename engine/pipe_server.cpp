@@ -163,9 +163,13 @@ void PipeServer::HandleClient(HANDLE hPipe) {
     }
     buf[bytesRead] = '\0';
 
-    // Parse command and optional argument
-    char cmd[64] = {}, arg[256] = {};
-    sscanf_s(buf, "%63s %255[^\r\n]", cmd, (unsigned)_countof(cmd), arg, (unsigned)_countof(arg));
+    // Parse command and optional argument.
+    // P6 fix: arg was 256 bytes — SET_ROUTING JSON payloads routinely exceed that
+    // (~200+ chars for 1-stream/2-route, proportionally larger for more). Truncation
+    // produced a broken JSON → LoadFromFile fell back to defaults silently → gain/mute
+    // changes appeared to have "no effect". 8 KB gives room for ~30 routes.
+    char cmd[64] = {}, arg[8192] = {};
+    sscanf_s(buf, "%63s %8191[^\r\n]", cmd, (unsigned)_countof(cmd), arg, (unsigned)_countof(arg));
 
     // Only log non-STATUS commands: STATUS is polled every second by the panel
     // and would otherwise flood the console.

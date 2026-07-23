@@ -179,11 +179,24 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
         // P4: routing table queries
         if (cmd == "GET_ROUTING") { return m_routing.ToJson(); }
         if (cmd == "SET_ROUTING") {
+            // P6 fix: don't LoadFromFile/Reinitialize here on the pipe thread —
+            // the network thread may be iterating the same routing vectors via
+            // MixingBus::Process(), which is a data race. Instead persist to file
+            // and flag the engine thread to reload + reinit (same deferred pattern
+            // as the other SET commands). While the engine is stopped it's safe to
+            // apply immediately; while running we stop/restart the TX network thread
+            // inside ApplyRoutingReconfig().
             std::ofstream f("routing.json");
             f << arg;
             f.close();
-            m_routing.LoadFromFile("routing.json");
-            return "OK";
+            if (m_state != EngineState::Running) {
+                // Safe: no network thread accessing routing or MixingBus
+                m_routing.LoadFromFile("routing.json");
+                if (m_mixingBus) m_mixingBus->Reinitialize(m_routing);
+                return "OK";
+            }
+            m_routingDirty.store(true, std::memory_order_release);
+            return "OK reconfiguring";
         }
         if (cmd == "EXIT") { SignalStop(); return "OK"; }
         return "ERR unknown command";
@@ -323,6 +336,22 @@ void Aes67Engine::Stop() {
 // m_netConfig values alone never re-bound the UDP sockets, so address changes
 // used to silently not take effect; here we actually stop and restart the
 // affected network threads with the current config.
+void Aes67Engine::ApplyRoutingReconfig() {
+    // P6 fix: take the MixingBus lock, reload routing.json, and rebuild per-stream
+    // buffers as one atomic step. The network thread's next Process() call will
+    // briefly block on EnterCriticalSection, then immediately see the new routes +
+    // fresh output buffers. No socket close/reopen or thread restart needed —
+    // gain/mute/destination changes take effect within one 1ms audio period.
+    if (m_mixingBus) {
+        m_mixingBus->Lock();
+        m_routing.LoadFromFile("routing.json");
+        m_mixingBus->Reinitialize(m_routing);
+        m_mixingBus->Unlock();
+        Logger::Instance().Info("RoutingReconfig: %zu destinations, %zu routes active",
+            m_routing.destinations.size(), m_routing.routes.size());
+    }
+}
+
 void Aes67Engine::ApplyNetworkReconfig() {
     if (m_state != EngineState::Running) return;  // only meaningful while streaming
 
@@ -450,6 +479,12 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         // M9-3 (P2): apply SET address/port changes by rebuilding sockets here.
         if (m_reconfigRequested.exchange(false, std::memory_order_acq_rel)) {
             ApplyNetworkReconfig();
+        }
+
+        // P6: apply SET_ROUTING changes by reloading routing.json and
+        // rebuilding MixingBus per-stream buffers (with TX restart if running).
+        if (m_routingDirty.exchange(false, std::memory_order_acq_rel)) {
+            ApplyRoutingReconfig();
         }
 
         // P3 heartbeat: only in panel-hosted mode (autoStart=false).

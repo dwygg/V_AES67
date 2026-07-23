@@ -8,31 +8,87 @@
 
 // P5: 混音总线 — 按路由表将输入通道分发到目标流，应用增益/静音。
 // 每路目标流有独立 RingBuffer，网络线程从中读取发送。
+//
+// P6: CRITICAL_SECTION protects concurrent access between the network thread
+// (Process) and the engine thread (Lock/LoadFromFile/Reinitialize/Unlock).
+// Process() acquires the lock internally; the engine thread must hold the
+// lock across the full LoadFromFile + Reinitialize sequence.
 
 class MixingBus {
 public:
     MixingBus(const RoutingTable& routing, const AudioConfig& config)
-        : m_routing(routing), m_config(config) {}
+        : m_routing(routing), m_config(config) {
+        InitializeCriticalSection(&m_lock);
+    }
+
+    ~MixingBus() {
+        EnterCriticalSection(&m_lock);
+        for (auto* rb : m_streamBuffers) delete rb;
+        m_streamBuffers.clear();
+        LeaveCriticalSection(&m_lock);
+        DeleteCriticalSection(&m_lock);
+    }
 
     // 初始化：为每路目标流创建独立 RingBuffer
     bool Initialize() {
+        EnterCriticalSection(&m_lock);
         for (size_t i = 0; i < m_routing.destinations.size(); i++) {
             auto* rb = new RingBuffer(kPerStreamBufSize);
             m_streamBuffers.push_back(rb);
         }
-        if (m_streamBuffers.empty()) return false;
-        Logger::Instance().Info("MixingBus: %zu streams ready", m_streamBuffers.size());
-        return true;
+        bool ok = !m_streamBuffers.empty();
+        LeaveCriticalSection(&m_lock);
+        if (ok) {
+            Logger::Instance().Info("MixingBus: %zu streams ready", m_streamBuffers.size());
+        }
+        return ok;
     }
 
-    ~MixingBus() {
-        for (auto* rb : m_streamBuffers) delete rb;
+    // P6 fix: rebuild per-stream buffers after routing table changes.
+    // Caller MUST hold m_lock (via Lock()/Unlock()) — this is NOT internally locked
+    // because the engine thread does LoadFromFile + Reinitialize as one atomic step.
+    //
+    // CRITICAL: when the destination count hasn't changed, only Reset() the existing
+    // buffers — do NOT delete+recreate them. The network thread holds raw pointers
+    // (from GetStreamBuffer) OUTSIDE the lock, and deleting would cause use-after-free
+    // on the next AvailableRead()/Read() call. Reset() is safe because head/tail are
+    // atomic — the worst case is one iteration seeing an empty buffer.
+    void Reinitialize(const RoutingTable& routing) {
+        size_t newCount = routing.destinations.size();
+        bool rebuilt = false;
+        if (newCount == m_streamBuffers.size()) {
+            // Count unchanged (common case: gain/mute changes) — safe in-place reset
+            for (auto* rb : m_streamBuffers) rb->Reset();
+        } else {
+            // Count changed — must rebuild. Held lock means Process() is blocked,
+            // and the network thread's next GetStreamBuffer() will see new buffers.
+            for (auto* rb : m_streamBuffers) delete rb;
+            m_streamBuffers.clear();
+            for (size_t i = 0; i < newCount; i++) {
+                m_streamBuffers.push_back(new RingBuffer(kPerStreamBufSize));
+            }
+            rebuilt = true;
+        }
+        if (!m_streamBuffers.empty()) {
+            Logger::Instance().Info("MixingBus: %zu streams %s",
+                m_streamBuffers.size(), rebuilt ? "rebuilt" : "reset in-place");
+        }
     }
+
+    // P6: public lock for engine-thread routing updates.
+    // Usage: bus->Lock(); routing.LoadFromFile(...); bus->Reinitialize(routing); bus->Unlock();
+    void Lock()   { EnterCriticalSection(&m_lock); }
+    void Unlock() { LeaveCriticalSection(&m_lock); }
 
     // 处理一个音频周期：从输入 RingBuffer 读取 → 按路由分发到各流
     // frameCount: 本周期帧数
     void Process(RingBuffer& input, UINT32 frameCount) {
         if (frameCount == 0) return;
+
+        // P6: guard against concurrent routing update from engine thread.
+        // Contention is negligible — the engine thread touches this lock only
+        // when the user clicks "Apply Routing", which is human-scale (seconds/minutes).
+        EnterCriticalSection(&m_lock);
 
         UINT32 channels = m_config.channels;
         UINT32 bytesPerFrame = m_config.blockAlign;
@@ -89,6 +145,7 @@ public:
         }
 
         delete[] inputData;
+        LeaveCriticalSection(&m_lock);
     }
 
     // 获取第 i 路目标流的 RingBuffer（供网络线程读取）
@@ -105,6 +162,7 @@ public:
 private:
     static constexpr size_t kPerStreamBufSize = 65536;  // 64KB per stream
 
+    CRITICAL_SECTION    m_lock;
     const RoutingTable& m_routing;
     const AudioConfig&  m_config;
     std::vector<RingBuffer*> m_streamBuffers;

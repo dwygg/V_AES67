@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
-add_executable(aes67_panel
+add_executable(aes67_panel WIN32
     main.cpp
     mainwindow.cpp
     pipe_client.cpp
