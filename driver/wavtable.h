@@ -164,9 +164,10 @@ static PCCONNECTION_DESCRIPTOR MiniportConnections[] = {
   // Render path: render_sink → DAC → render_source
   { PCFILTER_NODE,        KSPIN_WAVE_RENDER_SINK,     KSNODE_WAVE_DAC,     1 },
   { KSNODE_WAVE_DAC,      0,                          PCFILTER_NODE,       KSPIN_WAVE_RENDER_SOURCE },
-  // P8: Capture path: capture_source → ADC → capture_sink
-  { PCFILTER_NODE,        KSPIN_WAVE_CAPTURE_SOURCE,  KSNODE_WAVE_ADC,     1 },
-  { KSNODE_WAVE_ADC,      0,                          PCFILTER_NODE,       KSPIN_WAVE_CAPTURE_SINK },
+  // P8: Capture path: bridge(capture_sink) → ADC → host(capture_source)
+  // Data flows: topology → CAPTURE_SINK → ADC → CAPTURE_SOURCE → audio engine
+  { PCFILTER_NODE,        KSPIN_WAVE_CAPTURE_SINK,    KSNODE_WAVE_ADC,     1 },
+  { KSNODE_WAVE_ADC,      0,                          PCFILTER_NODE,       KSPIN_WAVE_CAPTURE_SOURCE },
 };
 
 //=============================================================================

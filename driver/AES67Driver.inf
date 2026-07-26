@@ -51,6 +51,8 @@ AddReg=AES67Driver.I.Wave.AddReg
 AddReg=AES67Driver.I.WaveCapture.AddReg
 
 [AES67Driver.I.WaveCapture.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%AES67Driver.WaveCapture.szPname%
 
 [AES67Driver.I.Wave.AddReg]
 HKR,,CLSID,,%Proxy.CLSID%
@@ -96,6 +98,7 @@ AES67Driver.SvcDesc="AES67Driver (WDM)"
 
 AES67Driver.Wave.szPname="AES67Driver Wave"
 AES67Driver.Topo.szPname="AES67Driver Topology"
+AES67Driver.WaveCapture.szPname="AES67Driver Wave Capture"
 
 Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
 KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
