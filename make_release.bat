@@ -35,16 +35,13 @@ echo.
 echo [4/6] Copying files to release\...
 cd /d "E:\jmdev\AES67"
 
-REM Launcher
 copy AES67_Launcher.exe "%RELEASE%\" >nul
 
-REM Engine
 mkdir "%RELEASE%\engine" 2>nul
 copy engine\aes67_engine.exe "%RELEASE%\engine\" >nul
 copy engine\routing.json "%RELEASE%\engine\" >nul
 copy engine\dsp.json "%RELEASE%\engine\" >nul
 
-REM Panel + Qt DLLs
 mkdir "%RELEASE%\panel" 2>nul
 copy panel\build\Release\aes67_panel.exe "%RELEASE%\panel\" >nul
 copy "%QT%\bin\Qt6Core.dll" "%RELEASE%\panel\" >nul
@@ -55,50 +52,114 @@ copy "%QT%\plugins\platforms\qwindows.dll" "%RELEASE%\panel\platforms\" >nul
 mkdir "%RELEASE%\panel\styles" 2>nul
 copy "%QT%\plugins\styles\qmodernwindowsstyle.dll" "%RELEASE%\panel\styles\" >nul
 
-REM Driver
 mkdir "%RELEASE%\driver" 2>nul
 copy driver\x64\Win10\AES67Driver.sys "%RELEASE%\driver\" >nul
 copy driver\x64\Win10\AES67Driver.inf "%RELEASE%\driver\" >nul
 copy driver\x64\Win10\AES67Driver.cer "%RELEASE%\driver\" >nul
 copy "driver\x64\Win10\AES67Driver\aes67driver.cat" "%RELEASE%\driver\" >nul 2>nul
-
-REM Devcon
 copy "%WDK_TOOLS%\devcon.exe" "%RELEASE%\driver\" >nul 2>nul
 
-REM Installer
-copy install.bat "%RELEASE%\" >nul
-
 echo        Done.
 
 echo.
-echo [5/6] Updating installer paths for release build...
-cd /d "%RELEASE%"
-REM Driver path in installer: change to .\driver
-powershell -Command "(gc install.bat) -replace 'E:\\\\jmdev\\\\AES67\\\\driver\\\\x64\\\\Win10', '.\driver' | Out-File -Encoding ASCII install.bat"
-REM devcon path: use .\driver\devcon.exe directly
-powershell -Command "(gc install.bat) -replace '::program files.*devcon.*', '' | Out-File -Encoding ASCII install.bat"
-
+echo [5/6] Generating release install.bat (relative paths)...
+> "%RELEASE%\install.bat" (
+    echo @echo off
+    echo setlocal enabledelayedexpansion
+    echo echo ================================================
+    echo echo   AES67 Virtual Soundcard - Installer
+    echo echo ================================================
+    echo echo.
+    echo echo This script needs ADMIN privileges.
+    echo echo.
+    echo net session ^>nul 2^>^&1
+    echo if %%errorlevel%% neq 0 (
+    echo     echo [ERROR] Right-click ^> Run as administrator.
+    echo     pause
+    echo     exit /b 1
+    echo ^)
+    echo.
+    echo set DRIVER=%%~dp0driver
+    echo set DEVCON=%%~dp0driver\devcon.exe
+    echo.
+    echo echo [1/5] Enabling Test Signing Mode...
+    echo bcdedit /enum ^| findstr "testsigning" ^| findstr "Yes" ^>nul
+    echo if %%errorlevel%% equ 0 (
+    echo     echo        Already ON.
+    echo     set REBOOT=0
+    echo ^) else (
+    echo     bcdedit /set testsigning on
+    echo     echo        Enabled. Restart required.
+    echo     set REBOOT=1
+    echo ^)
+    echo.
+    echo echo [2/5] Importing certificate...
+    echo certutil -addstore Root "%%DRIVER%%\AES67Driver.cer" ^>nul 2^>^&1
+    echo certutil -addstore TrustedPublisher "%%DRIVER%%\AES67Driver.cer" ^>nul 2^>^&1
+    echo echo        OK.
+    echo.
+    echo echo [3/5] Installing driver...
+    echo pnputil /enum-drivers ^| findstr "AES67Driver" ^>nul
+    echo if %%errorlevel%% equ 0 (
+    echo     echo        Removing old driver...
+    echo     if exist "%%DEVCON%%" "%%DEVCON%%" remove *AES67Driver ^>nul 2^>^&1
+    echo     for /f "tokens=*" %%%%i in ^('pnputil /enum-drivers ^| findstr /i "AES67Driver"'^) do (
+    echo         for /f "tokens=2 delims=:" %%%%j in ^("%%%%i"^) do (
+    echo             set OEM=%%%%j
+    echo             set OEM=!OEM: =!
+    echo             pnputil /delete-driver !OEM! ^>nul 2^>^&1
+    echo         ^)
+    echo     ^)
+    echo ^)
+    echo pnputil /add-driver "%%DRIVER%%\AES67Driver.inf" /install
+    echo echo        Driver installed.
+    echo if exist "%%DEVCON%%" (
+    echo     "%%DEVCON%%" install "%%DRIVER%%\AES67Driver.inf" "*AES67Driver" ^>nul 2^>^&1
+    echo     echo        Device node created.
+    echo ^)
+    echo.
+    echo echo [4/5] Restarting Audio service...
+    echo net stop audiosrv ^>nul 2^>^&1
+    echo net stop AudioEndpointBuilder ^>nul 2^>^&1
+    echo net start AudioEndpointBuilder ^>nul 2^>^&1
+    echo net start audiosrv ^>nul 2^>^&1
+    echo echo        Done.
+    echo.
+    echo echo [5/5] Verification...
+    echo pnputil /enum-devices /class MEDIA ^| findstr "AES67" ^>nul
+    echo if %%errorlevel%% equ 0 (echo        [OK] AES67Driver device found.^) else (echo        [WARN] Not found.^)
+    echo.
+    echo echo ================================================
+    echo echo   Install complete!
+    echo echo ================================================
+    echo echo   Launch: AES67_Launcher.exe
+    echo echo.
+    echo if %%REBOOT%% equ 1 (
+    echo     echo   [!] You MUST restart before the driver works.
+    echo     echo   [!] If Secure Boot is ON, disable it in BIOS first.
+    echo     choice /c YN /m "Restart now?"
+    echo     if !errorlevel! equ 1 shutdown /r /t 0
+    echo ^) else (
+    echo     echo   No restart needed.
+    echo ^)
+    echo pause
+)
 echo        Done.
 
 echo.
-echo [6/6] Release package ready:
+echo [6/6] Release package:
 echo.
 dir "%RELEASE%" /b
-echo.
 echo ================================================
 echo   Release: %RELEASE%
-echo   Size:
-cd /d "%RELEASE%" && dir /s | findstr "File(s)"
+echo   Give this folder to others.
+echo   They run install.bat (Admin) then AES67_Launcher.exe
 echo ================================================
-echo.
-echo   Give the release\ folder to others.
-echo   They just need to run install.bat (as Admin).
-echo.
 goto :done
 
 :error
 echo.
-echo   BUILD FAILED. Check error messages above.
+echo   BUILD FAILED.
 pause
 
 :done
