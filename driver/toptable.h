@@ -31,7 +31,7 @@ static PKSDATARANGE PinDataRangePointersBridge[] = {
 
 //=============================================================================
 static PCPIN_DESCRIPTOR MiniportPins[] = {
-  // KSPIN_TOPO_WAVEOUT_SOURCE
+  // KSPIN_TOPO_WAVEOUT_SOURCE (render bridge from wave filter)
   {
     0,
     0,
@@ -52,7 +52,7 @@ static PCPIN_DESCRIPTOR MiniportPins[] = {
     }
   },
 
-  // KSPIN_TOPO_LINEOUT_DEST
+  // KSPIN_TOPO_LINEOUT_DEST (physical speaker output)
   {
     0,
     0,
@@ -71,14 +71,58 @@ static PCPIN_DESCRIPTOR MiniportPins[] = {
       NULL,                                         // Name
       0                                             // Reserved
     }
+  },
+
+  // P8: KSPIN_TOPO_LINEIN_DEST (physical microphone input)
+  {
+    0,
+    0,
+    0,                                              // InstanceCount
+    NULL,                                           // AutomationTable
+    {                                               // KsPinDescriptor
+      0,                                            // InterfacesCount
+      NULL,                                         // Interfaces
+      0,                                            // MediumsCount
+      NULL,                                         // Mediums
+      SIZEOF_ARRAY(PinDataRangePointersBridge),     // DataRangesCount
+      PinDataRangePointersBridge,                   // DataRanges
+      KSPIN_DATAFLOW_IN,                            // DataFlow
+      KSPIN_COMMUNICATION_NONE,                     // Communication
+      &KSNODETYPE_MICROPHONE,                       // Category
+      NULL,                                         // Name
+      0                                             // Reserved
+    }
+  },
+
+  // P8: KSPIN_TOPO_BRIDGE_SOURCE (capture bridge to wave filter)
+  {
+    0,
+    0,
+    0,                                              // InstanceCount
+    NULL,                                           // AutomationTable
+    {                                               // KsPinDescriptor
+      0,                                            // InterfacesCount
+      NULL,                                         // Interfaces
+      0,                                            // MediumsCount
+      NULL,                                         // Mediums
+      SIZEOF_ARRAY(PinDataRangePointersBridge),     // DataRangesCount
+      PinDataRangePointersBridge,                   // DataRanges
+      KSPIN_DATAFLOW_OUT,                           // DataFlow
+      KSPIN_COMMUNICATION_NONE,                     // Communication
+      &KSCATEGORY_AUDIO,                            // Category
+      NULL,                                         // Name
+      0                                             // Reserved
+    }
   }
 
 };
 
 
 static PKSJACK_DESCRIPTION JackDescriptions[] = {
-    NULL,
-    NULL
+    NULL,   // WAVEOUT_SOURCE
+    NULL,   // LINEOUT_DEST
+    NULL,   // P8: LINEIN_DEST
+    NULL    // P8: BRIDGE_SOURCE
 };
 
 //=============================================================================
@@ -161,6 +205,22 @@ static PCNODE_DESCRIPTOR TopologyNodes[] = {
     &AutomationVolume,      // AutomationTable
     &KSNODETYPE_VOLUME,     // Type
     &KSAUDFNAME_MASTER_VOLUME // Name
+  },
+
+  // P8: KSNODE_TOPO_LINEIN_VOLUME (mic volume)
+  {
+    0,                      // Flags
+    &AutomationVolume,      // AutomationTable
+    &KSNODETYPE_VOLUME,     // Type
+    &KSAUDFNAME_WAVE_VOLUME // Name
+  },
+
+  // P8: KSNODE_TOPO_LINEIN_MUTE (mic mute)
+  {
+    0,                      // Flags
+    &AutomationMute,        // AutomationTable
+    &KSNODETYPE_MUTE,       // Type
+    &KSAUDFNAME_WAVE_MUTE   // Name
   }
 
 };
@@ -169,16 +229,24 @@ C_ASSERT( KSNODE_TOPO_WAVEOUT_VOLUME  == 0 );
 C_ASSERT( KSNODE_TOPO_WAVEOUT_MUTE    == 1 );
 C_ASSERT( KSNODE_TOPO_LINEOUT_MIX     == 2 );
 C_ASSERT( KSNODE_TOPO_LINEOUT_VOLUME  == 3 );
+C_ASSERT( KSNODE_TOPO_LINEIN_VOLUME   == 4 );
+C_ASSERT( KSNODE_TOPO_LINEIN_MUTE     == 5 );
 
 //=============================================================================
 static PCCONNECTION_DESCRIPTOR MiniportConnections[] = {
+  // === Render path ===
   //  FromNode,                     FromPin,                        ToNode,                      ToPin
   {   PCFILTER_NODE,                KSPIN_TOPO_WAVEOUT_SOURCE,      KSNODE_TOPO_WAVEOUT_VOLUME,    1 },
   {   KSNODE_TOPO_WAVEOUT_VOLUME,   0,                              KSNODE_TOPO_WAVEOUT_MUTE,      1 },
   {   KSNODE_TOPO_WAVEOUT_MUTE,     0,                              KSNODE_TOPO_LINEOUT_MIX,       1 },
-
   {   KSNODE_TOPO_LINEOUT_MIX,      0,                              KSNODE_TOPO_LINEOUT_VOLUME,    1 },
-  {   KSNODE_TOPO_LINEOUT_VOLUME,   0,                              PCFILTER_NODE,                 KSPIN_TOPO_LINEOUT_DEST }
+  {   KSNODE_TOPO_LINEOUT_VOLUME,   0,                              PCFILTER_NODE,                 KSPIN_TOPO_LINEOUT_DEST },
+
+  // === P8: Capture path ===
+  // mic_in → mic_volume → mic_mute → bridge_out
+  {   PCFILTER_NODE,                KSPIN_TOPO_LINEIN_DEST,         KSNODE_TOPO_LINEIN_VOLUME,     1 },
+  {   KSNODE_TOPO_LINEIN_VOLUME,    0,                              KSNODE_TOPO_LINEIN_MUTE,       1 },
+  {   KSNODE_TOPO_LINEIN_MUTE,      0,                              PCFILTER_NODE,                 KSPIN_TOPO_BRIDGE_SOURCE }
 };
 
 

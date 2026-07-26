@@ -481,6 +481,13 @@ Return Value:
                 ntStatus = PcRegisterPhysicalConnection(DeviceObject, unknownWave, TopologyPhysicalConnections.ulWaveOut, unknownTopology, TopologyPhysicalConnections.ulTopologyIn);
             }
         }
+
+        // P8: register capture physical connection (topology→wave direction)
+        if (NT_SUCCESS(ntStatus)) {
+            if ((CapturePhysicalConnections.ulTopologyOut != (ULONG)-1) && (CapturePhysicalConnections.ulWaveIn != (ULONG)-1)) {
+                ntStatus = PcRegisterPhysicalConnection(DeviceObject, unknownTopology, CapturePhysicalConnections.ulTopologyOut, unknownWave, CapturePhysicalConnections.ulWaveIn);
+            }
+        }
     }
 
     // Release the adapter common object.  It either has other references,

@@ -74,8 +74,8 @@ DEFINE_GUIDSTRUCT("A1B2C3D4-E5F6-7890-ABCD-EF1234567890", GUID_AES67_IOCTL_INTER
 #define KSPROPERTY_TYPE_ALL         KSPROPERTY_TYPE_BASICSUPPORT | KSPROPERTY_TYPE_GET | KSPROPERTY_TYPE_SET
 
 // Pin properties.
-#define MAX_OUTPUT_STREAMS          0       // Number of capture streams.
-#define MAX_INPUT_STREAMS           1       // Number of render streams.
+#define MAX_OUTPUT_STREAMS          1       // P8: capture streams (KS "output" = mic data → system)
+#define MAX_INPUT_STREAMS           1       // render streams (KS "input" = system audio → driver)
 #define MAX_TOTAL_STREAMS           MAX_OUTPUT_STREAMS + MAX_INPUT_STREAMS
 
 // PCM Info
@@ -109,18 +109,23 @@ typedef struct _PHYSICALCONNECTIONTABLE {
 // Wave pins
 enum {
     KSPIN_WAVE_RENDER_SINK = 0,
-    KSPIN_WAVE_RENDER_SOURCE
+    KSPIN_WAVE_RENDER_SOURCE,
+    KSPIN_WAVE_CAPTURE_SINK,        // P8: bridge pin from topology (DATAFLOW_IN to filter)
+    KSPIN_WAVE_CAPTURE_SOURCE       // P8: host capture pin (DATAFLOW_OUT from filter → audio engine)
 };
 
 // Wave Topology nodes.
 enum {
-    KSNODE_WAVE_DAC = 0
+    KSNODE_WAVE_DAC = 0,
+    KSNODE_WAVE_ADC                 // P8: ADC node for capture path
 };
 
 // topology pins.
 enum {
     KSPIN_TOPO_WAVEOUT_SOURCE = 0,
-    KSPIN_TOPO_LINEOUT_DEST
+    KSPIN_TOPO_LINEOUT_DEST,
+    KSPIN_TOPO_LINEIN_DEST,         // P8: physical mic input (DATAFLOW_IN)
+    KSPIN_TOPO_BRIDGE_SOURCE        // P8: bridge to wave capture (DATAFLOW_OUT)
 };
 
 // topology nodes.
@@ -128,7 +133,9 @@ enum {
     KSNODE_TOPO_WAVEOUT_VOLUME = 0,
     KSNODE_TOPO_WAVEOUT_MUTE,
     KSNODE_TOPO_LINEOUT_MIX,
-    KSNODE_TOPO_LINEOUT_VOLUME
+    KSNODE_TOPO_LINEOUT_VOLUME,
+    KSNODE_TOPO_LINEIN_VOLUME,      // P8: mic volume
+    KSNODE_TOPO_LINEIN_MUTE         // P8: mic mute
 };
 
 //=============================================================================
@@ -137,6 +144,7 @@ enum {
 
 // Physical connection table. Defined in mintopo.cpp for each sample
 extern PHYSICALCONNECTIONTABLE TopologyPhysicalConnections;
+extern PHYSICALCONNECTIONTABLE CapturePhysicalConnections;  // P8: capture path
 
 // Generic topology handler
 extern NTSTATUS PropertyHandler_Topology(IN PPCPROPERTY_REQUEST PropertyRequest);

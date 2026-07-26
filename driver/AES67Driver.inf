@@ -47,6 +47,11 @@ HKLM,%MediaCategories%\%AES67Driver.NameGuid%,Name,,%AES67Driver.Name%
 [AES67Driver.I.Wave]
 AddReg=AES67Driver.I.Wave.AddReg
 
+[AES67Driver.I.WaveCapture]
+AddReg=AES67Driver.I.WaveCapture.AddReg
+
+[AES67Driver.I.WaveCapture.AddReg]
+
 [AES67Driver.I.Wave.AddReg]
 HKR,,CLSID,,%Proxy.CLSID%
 HKR,,FriendlyName,,%AES67Driver.Wave.szPname%
@@ -67,6 +72,7 @@ AddReg=AES67Driver.AddReg
 [AES67Driver.NT.Interfaces]
 AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_Wave%,AES67Driver.I.Wave
 AddInterface=%KSCATEGORY_RENDER%,%KSNAME_Wave%,AES67Driver.I.Wave
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_Wave%,AES67Driver.I.WaveCapture
 AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_Topology%,AES67Driver.I.Topo
 
 [AES67Driver.NT.Services]

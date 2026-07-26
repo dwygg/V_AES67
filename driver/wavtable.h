@@ -54,10 +54,10 @@ static PKSDATARANGE PinDataRangePointersBridge[] = {
 
 //=============================================================================
 static PCPIN_DESCRIPTOR MiniportPins[] = {
-  // Wave Out Streaming Pin (Renderer) KSPIN_WAVE_RENDER_SINK
+  // Wave Out Streaming Pin (Renderer) — KSPIN_WAVE_RENDER_SINK
   {
     MAX_INPUT_STREAMS,
-    MAX_INPUT_STREAMS, 
+    MAX_INPUT_STREAMS,
     0,
     NULL,
     {
@@ -74,8 +74,8 @@ static PCPIN_DESCRIPTOR MiniportPins[] = {
       0
     }
   },
-  
-  // Wave Out Bridge Pin (Renderer) KSPIN_WAVE_RENDER_SOURCE
+
+  // Wave Out Bridge Pin (Renderer) — KSPIN_WAVE_RENDER_SOURCE
   {
     0,
     0,
@@ -95,22 +95,78 @@ static PCPIN_DESCRIPTOR MiniportPins[] = {
       0
     }
   },
+
+  // P8: Wave In Bridge Pin (Capture) — KSPIN_WAVE_CAPTURE_SINK
+  // Receives data from topology filter.
+  {
+    0,
+    0,
+    0,
+    NULL,
+    {
+      0,
+      NULL,
+      0,
+      NULL,
+      SIZEOF_ARRAY(PinDataRangePointersBridge),
+      PinDataRangePointersBridge,
+      KSPIN_DATAFLOW_IN,
+      KSPIN_COMMUNICATION_NONE,
+      &KSCATEGORY_AUDIO,
+      NULL,
+      0
+    }
+  },
+
+  // P8: Wave In Host Pin (Capture) — KSPIN_WAVE_CAPTURE_SOURCE
+  // Delivers capture data to the audio engine.
+  {
+    MAX_OUTPUT_STREAMS,
+    MAX_OUTPUT_STREAMS,
+    0,
+    NULL,
+    {
+      0,
+      NULL,
+      0,
+      NULL,
+      SIZEOF_ARRAY(PinDataRangePointersStream),
+      PinDataRangePointersStream,
+      KSPIN_DATAFLOW_OUT,
+      KSPIN_COMMUNICATION_SINK,
+      &KSCATEGORY_AUDIO,
+      NULL,
+      0
+    }
+  },
 };
 
 //=============================================================================
 static PCNODE_DESCRIPTOR MiniportNodes[] = {
+  // KSNODE_WAVE_DAC (render)
   {
     0,                      // Flags
     NULL,                   // AutomationTable
     &KSNODETYPE_DAC,        // Type
+    NULL                    // Name
+  },
+  // P8: KSNODE_WAVE_ADC (capture)
+  {
+    0,                      // Flags
+    NULL,                   // AutomationTable
+    &KSNODETYPE_ADC,        // Type
     NULL                    // Name
   }
 };
 
 //=============================================================================
 static PCCONNECTION_DESCRIPTOR MiniportConnections[] = {
-  { PCFILTER_NODE,        KSPIN_WAVE_RENDER_SINK,     KSNODE_WAVE_DAC,     1 },    
-  { KSNODE_WAVE_DAC,      0,                          PCFILTER_NODE,       KSPIN_WAVE_RENDER_SOURCE },    
+  // Render path: render_sink → DAC → render_source
+  { PCFILTER_NODE,        KSPIN_WAVE_RENDER_SINK,     KSNODE_WAVE_DAC,     1 },
+  { KSNODE_WAVE_DAC,      0,                          PCFILTER_NODE,       KSPIN_WAVE_RENDER_SOURCE },
+  // P8: Capture path: capture_source → ADC → capture_sink
+  { PCFILTER_NODE,        KSPIN_WAVE_CAPTURE_SOURCE,  KSNODE_WAVE_ADC,     1 },
+  { KSNODE_WAVE_ADC,      0,                          PCFILTER_NODE,       KSPIN_WAVE_CAPTURE_SINK },
 };
 
 //=============================================================================
@@ -141,7 +197,8 @@ DEFINE_PCAUTOMATION_TABLE_PROP(AutomationWaveFilter, PropertiesWaveFilter);
 // FindAudioDevice found 0 AES67 endpoints. Advertise AUDIO + RENDER.
 static GUID MiniportFilterCategories[] = {
   STATICGUIDOF(KSCATEGORY_AUDIO),
-  STATICGUIDOF(KSCATEGORY_RENDER)
+  STATICGUIDOF(KSCATEGORY_RENDER),
+  STATICGUIDOF(KSCATEGORY_CAPTURE)     // P8: register capture/mic endpoint
 };
 
 //=============================================================================

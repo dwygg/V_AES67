@@ -19,10 +19,19 @@ Abstract:
 
 PHYSICALCONNECTIONTABLE TopologyPhysicalConnections =
 {
-    KSPIN_TOPO_WAVEOUT_SOURCE,  // TopologyIn
-    (ULONG)-1,
-    (ULONG)-1,
-    KSPIN_WAVE_RENDER_SOURCE    // WaveOut
+    KSPIN_TOPO_WAVEOUT_SOURCE,  // TopologyIn (render: wave→topology)
+    (ULONG)-1,                   // TopologyOut (no topology→wave for render)
+    (ULONG)-1,                   // WaveIn
+    KSPIN_WAVE_RENDER_SOURCE     // WaveOut
+};
+
+// P8: capture physical connection — topology output → wave input
+PHYSICALCONNECTIONTABLE CapturePhysicalConnections =
+{
+    (ULONG)-1,                   // TopologyIn
+    KSPIN_TOPO_BRIDGE_SOURCE,   // TopologyOut (capture: topology→wave)
+    KSPIN_WAVE_CAPTURE_SINK,    // WaveIn
+    (ULONG)-1                    // WaveOut
 };
 
 #pragma code_seg("PAGE")
