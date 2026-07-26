@@ -66,35 +66,54 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
     }
 
     if (hasRx) {
-        // RX renders to a NON-AES67Driver render endpoint (physical speakers/headphones).
-        // We search all render devices and pick the first one that is NOT AES67Driver.
-        IMMDeviceCollection* coll = nullptr;
-        hr = m_enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &coll);
-        if (SUCCEEDED(hr) && coll) {
-            UINT count = 0; coll->GetCount(&count);
-            for (UINT i = 0; i < count; i++) {
-                IMMDevice* dev = nullptr;
-                if (SUCCEEDED(coll->Item(i, &dev))) {
-                    IPropertyStore* props = nullptr;
-                    if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
-                        PROPVARIANT var; PropVariantInit(&var);
-                        props->GetValue(PKEY_Device_FriendlyName, &var);
-                        bool isAes67 = var.pwszVal && wcsstr(var.pwszVal, kTargetDeviceName);
-                        if (!isAes67) {
-                            Logger::Instance().Info("RX output: %s",
-                                var.pwszVal ? WideToNarrow(var.pwszVal).c_str() : "(unknown)");
-                            PropVariantClear(&var); props->Release();
-                            m_deviceRx.Reset(dev);
-                            break;
-                        }
-                        PropVariantClear(&var); props->Release();
-                        dev->Release();
-                    } else {
-                        dev->Release();
+        // P9 fix: use Windows default playback device for RX output.
+        // User sets Bluetooth/HDMI/etc as default → engine routes there automatically.
+        // Falls back to enumerating first non-AES67Driver device if default is AES67Driver.
+        hr = m_enumerator->GetDefaultAudioEndpoint(eRender, eConsole, m_deviceRx.GetAddressOf());
+        if (SUCCEEDED(hr) && m_deviceRx) {
+            IPropertyStore* props = nullptr;
+            if (SUCCEEDED(m_deviceRx->OpenPropertyStore(STGM_READ, &props))) {
+                PROPVARIANT var; PropVariantInit(&var);
+                props->GetValue(PKEY_Device_FriendlyName, &var);
+                if (var.pwszVal && wcsstr(var.pwszVal, kTargetDeviceName)) {
+                    // Default is AES67Driver → don't use it (feedback loop), fall back
+                    Logger::Instance().Info("RX default is AES67Driver, falling back to enumeration");
+                    m_deviceRx.Reset();
+                } else {
+                    Logger::Instance().Info("RX output (default): %s",
+                        var.pwszVal ? WideToNarrow(var.pwszVal).c_str() : "(unknown)");
+                }
+                PropVariantClear(&var); props->Release();
+            }
+        }
+        // Fallback: enumerate first non-AES67Driver device
+        if (!m_deviceRx) {
+            IMMDeviceCollection* coll = nullptr;
+            hr = m_enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &coll);
+            if (SUCCEEDED(hr) && coll) {
+                UINT count = 0; coll->GetCount(&count);
+                for (UINT i = 0; i < count; i++) {
+                    IMMDevice* dev = nullptr;
+                    if (SUCCEEDED(coll->Item(i, &dev))) {
+                        IPropertyStore* props2 = nullptr;
+                        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props2))) {
+                            PROPVARIANT var2; PropVariantInit(&var2);
+                            props2->GetValue(PKEY_Device_FriendlyName, &var2);
+                            bool isAes67 = var2.pwszVal && wcsstr(var2.pwszVal, kTargetDeviceName);
+                            if (!isAes67) {
+                                Logger::Instance().Info("RX output (fallback): %s",
+                                    var2.pwszVal ? WideToNarrow(var2.pwszVal).c_str() : "(unknown)");
+                                PropVariantClear(&var2); props2->Release();
+                                m_deviceRx.Reset(dev);
+                                break;
+                            }
+                            PropVariantClear(&var2); props2->Release();
+                            dev->Release();
+                        } else { dev->Release(); }
                     }
                 }
+                coll->Release();
             }
-            coll->Release();
         }
         if (!m_deviceRx) {
             // NON-FATAL (same rationale as TX): disable RX, keep engine alive.
@@ -103,9 +122,39 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
             m_netConfig.enableRx = false;
             hasRx = false;
         } else if (!m_audioRenderThread.Initialize(m_deviceRx.Get(), m_config)) {
-            Logger::Instance().Error("RX render init failed. RX disabled.");
-            m_netConfig.enableRx = false;
-            hasRx = false;
+            // P9: default device may not support L24/48k (e.g. Bluetooth).
+            // Fall back to enumerating all devices instead of disabling RX.
+            Logger::Instance().Error("RX render init failed for default device, trying enumeration fallback");
+            m_deviceRx.Reset();
+            IMMDeviceCollection* coll2 = nullptr;
+            HRESULT hr2 = m_enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &coll2);
+            if (SUCCEEDED(hr2) && coll2) {
+                UINT count = 0; coll2->GetCount(&count);
+                for (UINT i = 0; i < count; i++) {
+                    IMMDevice* dev = nullptr;
+                    if (SUCCEEDED(coll2->Item(i, &dev))) {
+                        IPropertyStore* ps = nullptr;
+                        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &ps))) {
+                            PROPVARIANT v; PropVariantInit(&v);
+                            ps->GetValue(PKEY_Device_FriendlyName, &v);
+                            bool skip = (v.pwszVal && wcsstr(v.pwszVal, kTargetDeviceName));
+                            PropVariantClear(&v); ps->Release();
+                            if (!skip && m_audioRenderThread.Initialize(dev, m_config)) {
+                                m_deviceRx.Reset(dev);
+                                Logger::Instance().Info("RX output (fallback init OK)");
+                                break;
+                            }
+                            dev->Release();
+                        } else { dev->Release(); }
+                    }
+                }
+                coll2->Release();
+            }
+            if (!m_deviceRx) {
+                Logger::Instance().Error("All RX devices failed — RX disabled");
+                m_netConfig.enableRx = false;
+                hasRx = false;
+            }
         } else {
             m_jitterBuffer.Reset();
         }
