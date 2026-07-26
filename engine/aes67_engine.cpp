@@ -117,6 +117,9 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
     // P5: Initialize mixing bus with routing table
     m_mixingBus = new MixingBus(m_routing, m_config);
     m_mixingBus->Initialize();
+    // P7: Load per-stream DSP config after MixingBus is ready
+    m_mixingBus->GetDspConfig().LoadFromFile("dsp.json");
+    m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
 
     // M9: Set up IPC command handler
     m_pipeServer.SetHandler([this](const std::string& cmd, const std::string& arg) -> std::string {
@@ -175,6 +178,26 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
             m_netConfig.destPort = (uint16_t)atoi(arg.substr(5).c_str());
             m_reconfigRequested.store(true, std::memory_order_release);
             return m_state == EngineState::Running ? "OK reconfiguring" : "OK";
+        }
+        // P7: DSP config queries
+        if (cmd == "GET_DSP") {
+            return m_mixingBus ? m_mixingBus->GetDspConfig().ToJson() : "ERR no mixing bus";
+        }
+        if (cmd == "SET_DSP") {
+            std::ofstream f("dsp.json");
+            f << arg;
+            f.close();
+            if (m_state != EngineState::Running) {
+                if (m_mixingBus) {
+                    m_mixingBus->Lock();
+                    m_mixingBus->GetDspConfig().LoadFromFile("dsp.json");
+                    m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
+                    m_mixingBus->Unlock();
+                }
+                return "OK";
+            }
+            m_dspDirty.store(true, std::memory_order_release);
+            return "OK reconfiguring";
         }
         // P4: routing table queries
         if (cmd == "GET_ROUTING") { return m_routing.ToJson(); }
@@ -352,6 +375,20 @@ void Aes67Engine::ApplyRoutingReconfig() {
     }
 }
 
+void Aes67Engine::ApplyDspReconfig() {
+    // P7: reload dsp.json under the MixingBus lock so Process() is blocked.
+    // Same pattern as ApplyRoutingReconfig but only touches DSP config,
+    // not stream buffers. Safe to call while running — no thread restart needed.
+    if (m_mixingBus) {
+        m_mixingBus->Lock();
+        m_mixingBus->GetDspConfig().LoadFromFile("dsp.json");
+        m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
+        m_mixingBus->Unlock();
+        Logger::Instance().Info("DspReconfig: %zu streams loaded",
+            m_mixingBus->GetDspConfig().streams.size());
+    }
+}
+
 void Aes67Engine::ApplyNetworkReconfig() {
     if (m_state != EngineState::Running) return;  // only meaningful while streaming
 
@@ -485,6 +522,11 @@ void Aes67Engine::RunBlocking(const AudioConfig& config, AudioThreadStats& outSt
         // rebuilding MixingBus per-stream buffers (with TX restart if running).
         if (m_routingDirty.exchange(false, std::memory_order_acq_rel)) {
             ApplyRoutingReconfig();
+        }
+
+        // P7: apply SET_DSP changes by reloading dsp.json under lock.
+        if (m_dspDirty.exchange(false, std::memory_order_acq_rel)) {
+            ApplyDspReconfig();
         }
 
         // P3 heartbeat: only in panel-hosted mode (autoStart=false).

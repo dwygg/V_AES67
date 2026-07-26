@@ -111,6 +111,7 @@ private:
     std::atomic<bool>        m_stopAudioRequested = false;   // M9-1: STOP audio, keep process+pipe alive
     std::atomic<bool>        m_reconfigRequested = false;    // M9-3: SET changed net config -> rebuild sockets on engine thread
     std::atomic<bool>        m_routingDirty = false;         // P6: SET_ROUTING changed routing -> reload + reinit MixingBus on engine thread
+    std::atomic<bool>        m_dspDirty = false;             // P7: SET_DSP changed DSP -> reload dsp.json on engine thread
     std::atomic<ULONGLONG>   m_lastPipeActivity{GetTickCount64()};  // P3: GetTickCount64 when last pipe command received
     static constexpr ULONGLONG kPipeHeartbeatTimeoutMs = 3000; // P3: 3s without pipe command → panel disconnected
 
@@ -122,6 +123,10 @@ private:
     // P6: reload routing.json + reinitialize MixingBus after SET_ROUTING.
     // MUST run on engine thread — stops/restarts TX network if running.
     void ApplyRoutingReconfig();
+
+    // P7: reload dsp.json after SET_DSP.
+    // MUST run on engine thread — modifies MixingBus under its lock.
+    void ApplyDspReconfig();
 
     // M5 transmit
     RingBuffer     m_ringBuffer{kRingBufferCapacity};

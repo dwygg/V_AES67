@@ -70,6 +70,14 @@ private:
     QTableWidget* m_destTable;
     QTableWidget* m_routeTable;
 
+    // ---- DSP tab (P7) ----
+    void onRefreshDsp();
+    void onApplyDsp();
+    void onAddDspStream();
+    void buildDspFromJson(const QJsonDocument& doc);
+    QJsonDocument buildDspJson() const;
+    QTableWidget* m_dspTable;
+
     // Tray
     QSystemTrayIcon* m_tray;
     QMenu*   m_trayMenu;

@@ -253,6 +253,58 @@ void MainWindow::setupUi() {
     tabs->addTab(routingTab, "Routing");
 
     // ===================================================================
+    //  DSP TAB  (P7)
+    // ===================================================================
+    auto* dspTab = new QWidget();
+    auto* dspLayout = new QVBoxLayout(dspTab);
+    dspLayout->setContentsMargins(8, 8, 8, 8);
+    dspLayout->setSpacing(12);
+
+    auto* dspGroup = new QGroupBox("Per-Stream DSP — Gain Trim & Mute");
+    dspGroup->setStyleSheet("QGroupBox { font-weight: bold; padding-top: 14px; }");
+    auto* dspVLayout = new QVBoxLayout(dspGroup);
+    dspVLayout->setSpacing(6);
+    dspVLayout->setContentsMargins(12, 18, 12, 10);
+
+    m_dspTable = new QTableWidget(0, 4);
+    setupTableHeader(m_dspTable, {"Stream", "Gain Trim", "Mute", ""});
+    m_dspTable->setColumnWidth(0, 100);
+    m_dspTable->setColumnWidth(1, 420);
+    m_dspTable->setColumnWidth(2, 70);
+    m_dspTable->setColumnWidth(3, 44);
+    m_dspTable->setMaximumHeight(180);
+    m_dspTable->verticalHeader()->setDefaultSectionSize(38);
+    dspVLayout->addWidget(m_dspTable);
+
+    auto* addDspBtn = new QPushButton("+ Add Stream DSP");
+    addDspBtn->setMinimumHeight(30);
+    connect(addDspBtn, &QPushButton::clicked, this, &MainWindow::onAddDspStream);
+    dspVLayout->addWidget(addDspBtn);
+    dspLayout->addWidget(dspGroup);
+
+    // Action buttons
+    auto* dspBtnRow = new QHBoxLayout();
+    dspBtnRow->setSpacing(10);
+    auto* btnRefreshD = new QPushButton("Refresh from Engine");
+    btnRefreshD->setMinimumHeight(34);
+    connect(btnRefreshD, &QPushButton::clicked, this, &MainWindow::onRefreshDsp);
+    auto* btnApplyD = new QPushButton("Apply DSP");
+    btnApplyD->setMinimumHeight(34);
+    btnApplyD->setStyleSheet(
+        "QPushButton { font-weight: bold; font-size: 13px; "
+        "background-color: #0078d4; color: white; border-radius: 4px; padding: 6px 24px; }"
+        "QPushButton:hover { background-color: #106ebe; }");
+    connect(btnApplyD, &QPushButton::clicked, this, &MainWindow::onApplyDsp);
+    dspBtnRow->addWidget(btnRefreshD);
+    dspBtnRow->addStretch();
+    dspBtnRow->addWidget(btnApplyD);
+    dspLayout->addLayout(dspBtnRow);
+
+    tabs->addTab(dspTab, "DSP");
+    // P7: seed with default stream DSP row
+    onAddDspStream();
+
+    // ===================================================================
     //  BOTTOM CONTROLS
     // ===================================================================
     auto* ctrlRow = new QHBoxLayout();
@@ -631,4 +683,143 @@ void MainWindow::onAddRoute() {
         m_routeTable->removeRow(row);
     });
     m_routeTable->setCellWidget(row, 4, centerCellWidget(delBtn));
+}
+
+// ── P7: DSP tab ──────────────────────────────────────────
+
+void MainWindow::onAddDspStream() {
+    int row = m_dspTable->rowCount();
+    m_dspTable->insertRow(row);
+    m_dspTable->setRowHeight(row, 36);
+
+    // Stream label
+    auto* label = new QLabel(QString("Stream %1").arg(row));
+    label->setAlignment(Qt::AlignCenter);
+    label->setStyleSheet("font-weight: bold; font-size: 13px;");
+    m_dspTable->setCellWidget(row, 0, centerCellWidget(label));
+
+    // Gain Trim slider + value label (same pattern as route gain)
+    auto* gainWidget = new QWidget();
+    auto* gainLayout = new QHBoxLayout(gainWidget);
+    gainLayout->setContentsMargins(6, 2, 6, 2);
+    gainLayout->setSpacing(10);
+    auto* gainSlider = new QSlider(Qt::Horizontal);
+    gainSlider->setRange(0, 200);
+    gainSlider->setValue(100);
+    gainSlider->setMinimumWidth(280);
+    auto* gainLabel = new QLabel("1.00");
+    gainLabel->setFixedWidth(52);
+    gainLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gainLabel->setStyleSheet("font-size: 13px; font-weight: bold;");
+    connect(gainSlider, &QSlider::valueChanged, this, [gainLabel](int v) {
+        gainLabel->setText(QString::number(v / 100.0, 'f', 2));
+    });
+    gainLayout->addWidget(gainSlider);
+    gainLayout->addWidget(gainLabel);
+    m_dspTable->setCellWidget(row, 1, gainWidget);
+
+    // Mute checkbox
+    auto* muteCb = new QCheckBox();
+    auto* muteW = new QWidget();
+    auto* muteL  = new QHBoxLayout(muteW);
+    muteL->setContentsMargins(0, 0, 0, 0);
+    muteL->setAlignment(Qt::AlignCenter);
+    muteL->addWidget(muteCb);
+    m_dspTable->setCellWidget(row, 2, muteW);
+
+    // Delete button
+    auto* delBtn = new QPushButton("✕"); delBtn->setFixedSize(28, 26);
+    connect(delBtn, &QPushButton::clicked, this, [this, row]() {
+        m_dspTable->removeRow(row);
+    });
+    m_dspTable->setCellWidget(row, 3, centerCellWidget(delBtn));
+}
+
+void MainWindow::onRefreshDsp() {
+    std::string resp = m_pipe.SendCommand("GET_DSP");
+    if (resp.empty() || resp.rfind("ERR", 0) == 0) {
+        statusBar()->showMessage("DSP fetch failed", 2000);
+        return;
+    }
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(resp), &err);
+    if (err.error != QJsonParseError::NoError) {
+        statusBar()->showMessage("DSP JSON parse error: " + err.errorString(), 3000);
+        return;
+    }
+    buildDspFromJson(doc);
+    statusBar()->showMessage("DSP refreshed", 2000);
+}
+
+void MainWindow::onApplyDsp() {
+    auto* btn = qobject_cast<QPushButton*>(sender());
+    if (btn) {
+        btn->setEnabled(false);
+        btn->setText("Applying...");
+    }
+
+    QJsonDocument doc = buildDspJson();
+    std::string json = doc.toJson(QJsonDocument::Compact).toStdString();
+    std::string resp = m_pipe.SendCommand("SET_DSP " + json);
+    bool ok = !resp.empty() && resp.rfind("OK", 0) == 0;
+    statusBar()->showMessage(ok ? "DSP applied" : "DSP apply failed", 2000);
+
+    if (btn) {
+        btn->setText(ok ? "✓ Applied" : "✗ Failed");
+        btn->setStyleSheet(
+            ok
+            ? "QPushButton { font-weight: bold; font-size: 13px; "
+              "background-color: #107c10; color: white; border-radius: 4px; padding: 6px 24px; }"
+            : "QPushButton { font-weight: bold; font-size: 13px; "
+              "background-color: #d13438; color: white; border-radius: 4px; padding: 6px 24px; }");
+        QTimer::singleShot(1500, btn, [btn]() {
+            btn->setEnabled(true);
+            btn->setText("Apply DSP");
+            btn->setStyleSheet(
+                "QPushButton { font-weight: bold; font-size: 13px; "
+                "background-color: #0078d4; color: white; border-radius: 4px; padding: 6px 24px; }"
+                "QPushButton:hover { background-color: #106ebe; }");
+        });
+    }
+}
+
+QJsonDocument MainWindow::buildDspJson() const {
+    QJsonArray streams;
+    for (int r = 0; r < m_dspTable->rowCount(); r++) {
+        QJsonObject s;
+        QWidget* gainW = m_dspTable->cellWidget(r, 1);
+        auto* slider = gainW ? gainW->findChild<QSlider*>() : nullptr;
+        QWidget* muteW = m_dspTable->cellWidget(r, 2);
+        auto* muteCb = muteW ? muteW->findChild<QCheckBox*>() : nullptr;
+        s["gain"] = slider ? slider->value() / 100.0 : 1.0;
+        s["mute"] = muteCb ? muteCb->isChecked() : false;
+        streams.append(s);
+    }
+    QJsonObject root;
+    root["streams"] = streams;
+    return QJsonDocument(root);
+}
+
+void MainWindow::buildDspFromJson(const QJsonDocument& doc) {
+    QJsonObject root = doc.object();
+    QJsonArray streams = root["streams"].toArray();
+
+    while (m_dspTable->rowCount() < streams.size())
+        onAddDspStream();
+    while (m_dspTable->rowCount() > streams.size())
+        m_dspTable->removeRow(m_dspTable->rowCount() - 1);
+
+    for (int i = 0; i < streams.size(); i++) {
+        QJsonObject s = streams[i].toObject();
+        QWidget* gainW = m_dspTable->cellWidget(i, 1);
+        auto* slider = gainW ? gainW->findChild<QSlider*>() : nullptr;
+        auto* label  = gainW ? gainW->findChild<QLabel*>() : nullptr;
+        QWidget* muteW = m_dspTable->cellWidget(i, 2);
+        auto* muteCb = muteW ? muteW->findChild<QCheckBox*>() : nullptr;
+
+        int gainVal = (int)(s["gain"].toDouble(1.0) * 100.0);
+        if (slider) slider->setValue(gainVal);
+        if (label)  label->setText(QString::number(gainVal / 100.0, 'f', 2));
+        if (muteCb) muteCb->setChecked(s["mute"].toBool());
+    }
 }

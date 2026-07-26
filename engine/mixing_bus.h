@@ -2,6 +2,8 @@
 #include "ring_buffer.h"
 #include "routing.h"
 #include "audio_config.h"
+#include "dsp_chain.h"
+#include "dsp_config.h"
 #include "logger.h"
 #include <vector>
 #include <cstring>
@@ -36,6 +38,8 @@ public:
             auto* rb = new RingBuffer(kPerStreamBufSize);
             m_streamBuffers.push_back(rb);
         }
+        // P7: sync DSP config count with destination count
+        m_dspConfig.SyncCount(m_streamBuffers.size());
         bool ok = !m_streamBuffers.empty();
         LeaveCriticalSection(&m_lock);
         if (ok) {
@@ -69,6 +73,8 @@ public:
             }
             rebuilt = true;
         }
+        // P7: keep DSP config count in sync with stream count
+        m_dspConfig.SyncCount(newCount);
         if (!m_streamBuffers.empty()) {
             Logger::Instance().Info("MixingBus: %zu streams %s",
                 m_streamBuffers.size(), rebuilt ? "rebuilt" : "reset in-place");
@@ -140,6 +146,12 @@ public:
             }
 
             if (anyRoute) {
+                // P7: per-stream DSP chain — gain trim + mute (in-place)
+                if (si < m_dspConfig.streams.size()) {
+                    dspProcessBlock(streamBuf.data(), frameCount,
+                                    m_dspConfig.streams[si],
+                                    m_config.channels, m_config.bitsPerSample);
+                }
                 m_streamBuffers[si]->Write(streamBuf.data(), totalBytes);
             }
         }
@@ -155,6 +167,9 @@ public:
 
     size_t StreamCount() const { return m_streamBuffers.size(); }
 
+    // P7: per-stream DSP configuration accessor (for engine pipe handler)
+    DspConfig& GetDspConfig() { return m_dspConfig; }
+
     void Reset() {
         for (auto* rb : m_streamBuffers) rb->Reset();
     }
@@ -166,6 +181,7 @@ private:
     const RoutingTable& m_routing;
     const AudioConfig&  m_config;
     std::vector<RingBuffer*> m_streamBuffers;
+    DspConfig m_dspConfig;               // P7: per-stream DSP settings
 
     static void applyGain16(const BYTE* src, BYTE* dst, float gain) {
         int16_t s;
