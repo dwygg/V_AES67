@@ -137,11 +137,15 @@ void AudioRenderThread::RunLoop() {
     __try {
     while (m_running.load(std::memory_order_acquire)) {
         if (hAudioEvent) {
-            DWORD result = WaitForMultipleObjects(waitCount, waitHandles, FALSE, 5);
+            // P9 fix: 10ms wait matches WASAPI buffer period
+            DWORD result = WaitForMultipleObjects(waitCount, waitHandles, FALSE, 10);
             if (result == WAIT_OBJECT_0 + 1) break;
             if (result != WAIT_OBJECT_0) continue;
         } else {
-            if (WaitForSingleObject(m_stopEvent, 5) == WAIT_OBJECT_0) break;
+            // P9 fix: 10ms poll matches WASAPI period. 5ms was too fast —
+            // on first START the render loop drained jitter buffer faster than
+            // RX could replenish (consume 22 pkts/iter, RX only adds 10/iter).
+            if (WaitForSingleObject(m_stopEvent, 10) == WAIT_OBJECT_0) break;
         }
 
         // Get render buffer — use actual WASAPI buffer size, not config period
