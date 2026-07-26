@@ -22,7 +22,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // 2. 等引擎初始化完毕（管道就绪）
     Sleep(2000);
 
-    // 3. 启动面板
+    // 3. 启动面板（注意重置 si 的 SHOWWINDOW 标志——引擎用了 SW_HIDE）
+    si.wShowWindow = SW_SHOWNORMAL;
     PROCESS_INFORMATION piPanel = {};
     if (!CreateProcessW(L"panel\\build\\Release\\aes67_panel.exe",
             nullptr, nullptr, nullptr, FALSE,
