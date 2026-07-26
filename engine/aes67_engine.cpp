@@ -120,6 +120,7 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
     // P7: Load per-stream DSP config after MixingBus is ready
     m_mixingBus->GetDspConfig().LoadFromFile("dsp.json");
     m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
+    m_mixingBus->GetDspConfig().RedesignAll((float)m_config.sampleRate);
 
     // M9: Set up IPC command handler
     m_pipeServer.SetHandler([this](const std::string& cmd, const std::string& arg) -> std::string {
@@ -192,6 +193,7 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
                     m_mixingBus->Lock();
                     m_mixingBus->GetDspConfig().LoadFromFile("dsp.json");
                     m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
+                    m_mixingBus->GetDspConfig().RedesignAll((float)m_config.sampleRate);
                     m_mixingBus->Unlock();
                 }
                 return "OK";
@@ -383,6 +385,7 @@ void Aes67Engine::ApplyDspReconfig() {
         m_mixingBus->Lock();
         m_mixingBus->GetDspConfig().LoadFromFile("dsp.json");
         m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
+        m_mixingBus->GetDspConfig().RedesignAll((float)m_config.sampleRate);
         m_mixingBus->Unlock();
         Logger::Instance().Info("DspReconfig: %zu streams loaded",
             m_mixingBus->GetDspConfig().streams.size());

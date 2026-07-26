@@ -84,6 +84,14 @@ struct DspConfig {
             DspSettings s;
             s.gain = (float)jsonDouble(item, "gain", 1.0);
             s.mute = jsonBool(item, "mute", false);
+            // P7b: parse optional EQ bands array
+            auto bandItems = extractArray(item, "bands");
+            for (size_t b = 0; b < bandItems.size() && b < 3; b++) {
+                s.bands[b].freqHz  = (float)jsonDouble(bandItems[b], "freq", s.bands[b].freqHz);
+                s.bands[b].gainDb  = (float)jsonDouble(bandItems[b], "gain_db", s.bands[b].gainDb);
+                s.bands[b].Q       = (float)jsonDouble(bandItems[b], "q", s.bands[b].Q);
+                s.bands[b].enabled = jsonBool(bandItems[b], "enabled", false);
+            }
             streams.push_back(s);
         }
 
@@ -100,12 +108,28 @@ struct DspConfig {
         ss << "{\n  \"streams\": [\n";
         for (size_t i = 0; i < streams.size(); i++) {
             ss << "    {\"gain\":" << streams[i].gain
-               << ",\"mute\":" << (streams[i].mute ? "true" : "false") << "}";
+               << ",\"mute\":" << (streams[i].mute ? "true" : "false");
+            // P7b: serialize EQ bands
+            ss << ",\"bands\":[";
+            for (int b = 0; b < 3; b++) {
+                if (b > 0) ss << ",";
+                ss << "{\"freq\":" << streams[i].bands[b].freqHz
+                   << ",\"gain_db\":" << streams[i].bands[b].gainDb
+                   << ",\"q\":" << streams[i].bands[b].Q
+                   << ",\"enabled\":" << (streams[i].bands[b].enabled ? "true" : "false")
+                   << "}";
+            }
+            ss << "]}";
             if (i + 1 < streams.size()) ss << ",";
             ss << "\n";
         }
         ss << "  ]\n}";
         return ss.str();
+    }
+
+    // P7b: redesign all biquad coefficients after config load or sample rate change
+    void RedesignAll(float sampleRate) {
+        for (auto& s : streams) s.RedesignAll(sampleRate);
     }
 
     void ApplyDefaults(size_t streamCount) {

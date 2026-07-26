@@ -282,6 +282,91 @@ void MainWindow::setupUi() {
     dspVLayout->addWidget(addDspBtn);
     dspLayout->addWidget(dspGroup);
 
+    // P7b: 3-band EQ section
+    auto* eqGroup = new QGroupBox("3-Band EQ");
+    eqGroup->setStyleSheet("QGroupBox { font-weight: bold; padding-top: 14px; }");
+    auto* eqLayout = new QVBoxLayout(eqGroup);
+    eqLayout->setSpacing(6);
+    eqLayout->setContentsMargins(12, 18, 12, 10);
+
+    // Stream selector
+    auto* selRow = new QHBoxLayout();
+    selRow->addWidget(new QLabel("Stream:"));
+    m_dspEqStreamSel = new QComboBox();
+    m_dspEqStreamSel->setMinimumWidth(180);
+    connect(m_dspEqStreamSel, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onDspEqStreamChanged);
+    selRow->addWidget(m_dspEqStreamSel);
+    selRow->addStretch();
+    eqLayout->addLayout(selRow);
+
+    // 3-band EQ grid
+    auto* eqGrid = new QGridLayout();
+    eqGrid->setSpacing(6);
+    eqGrid->setContentsMargins(0, 4, 0, 0);
+    // Header row
+    eqGrid->addWidget(new QLabel("Band"),    0, 0, Qt::AlignCenter);
+    eqGrid->addWidget(new QLabel("Freq (Hz)"), 0, 1, Qt::AlignCenter);
+    eqGrid->addWidget(new QLabel("Gain (dB)"), 0, 2, Qt::AlignCenter);
+    eqGrid->addWidget(new QLabel("Q"),        0, 3, Qt::AlignCenter);
+    eqGrid->addWidget(new QLabel("On"),       0, 4, Qt::AlignCenter);
+
+    const char* bandNames[] = {"Low", "Mid", "High"};
+    float defaultFreqs[]    = {200.0f, 1000.0f, 8000.0f};
+    float defaultQs[]       = {0.707f, 1.0f, 0.707f};
+
+    for (int b = 0; b < 3; b++) {
+        int row = b + 1;
+        eqGrid->addWidget(new QLabel(bandNames[b]), row, 0, Qt::AlignCenter);
+
+        m_eqFreq[b] = new QDoubleSpinBox();
+        m_eqFreq[b]->setRange(20.0, 20000.0);
+        m_eqFreq[b]->setValue(defaultFreqs[b]);
+        m_eqFreq[b]->setDecimals(0);
+        m_eqFreq[b]->setFixedWidth(80);
+        connect(m_eqFreq[b], QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this](double) { onDspEqChanged(); });
+        eqGrid->addWidget(m_eqFreq[b], row, 1, Qt::AlignCenter);
+
+        // Gain slider + label
+        auto* gainW = new QWidget();
+        auto* gainLay = new QHBoxLayout(gainW);
+        gainLay->setContentsMargins(0, 0, 0, 0);
+        gainLay->setSpacing(6);
+        m_eqGain[b] = new QSlider(Qt::Horizontal);
+        m_eqGain[b]->setRange(-120, 120);  // -12.0 to +12.0 dB
+        m_eqGain[b]->setValue(0);
+        m_eqGain[b]->setMinimumWidth(180);
+        m_eqGainLabel[b] = new QLabel("0.0");
+        m_eqGainLabel[b]->setFixedWidth(42);
+        m_eqGainLabel[b]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_eqGainLabel[b]->setStyleSheet("font-size: 13px; font-weight: bold;");
+        connect(m_eqGain[b], &QSlider::valueChanged, this, [this, b](int v) {
+            m_eqGainLabel[b]->setText(QString::number(v / 10.0, 'f', 1));
+            onDspEqChanged();
+        });
+        gainLay->addWidget(m_eqGain[b]);
+        gainLay->addWidget(m_eqGainLabel[b]);
+        eqGrid->addWidget(gainW, row, 2);
+
+        m_eqQ[b] = new QDoubleSpinBox();
+        m_eqQ[b]->setRange(0.1, 10.0);
+        m_eqQ[b]->setValue(defaultQs[b]);
+        m_eqQ[b]->setDecimals(2);
+        m_eqQ[b]->setSingleStep(0.1);
+        m_eqQ[b]->setFixedWidth(70);
+        connect(m_eqQ[b], QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this](double) { onDspEqChanged(); });
+        eqGrid->addWidget(m_eqQ[b], row, 3, Qt::AlignCenter);
+
+        m_eqEnabled[b] = new QCheckBox();
+        m_eqEnabled[b]->setChecked(false);
+        connect(m_eqEnabled[b], &QCheckBox::toggled, this, [this](bool) { onDspEqChanged(); });
+        eqGrid->addWidget(m_eqEnabled[b], row, 4, Qt::AlignCenter);
+    }
+    eqLayout->addLayout(eqGrid);
+    dspLayout->addWidget(eqGroup);
+
     // Action buttons
     auto* dspBtnRow = new QHBoxLayout();
     dspBtnRow->setSpacing(10);
@@ -731,8 +816,35 @@ void MainWindow::onAddDspStream() {
     auto* delBtn = new QPushButton("✕"); delBtn->setFixedSize(28, 26);
     connect(delBtn, &QPushButton::clicked, this, [this, row]() {
         m_dspTable->removeRow(row);
+        // Rebuild stream selector
+        m_dspEqStreamSel->clear();
+        for (int r = 0; r < m_dspTable->rowCount(); r++)
+            m_dspEqStreamSel->addItem(QString("Stream %1").arg(r));
     });
     m_dspTable->setCellWidget(row, 3, centerCellWidget(delBtn));
+
+    // P7b: initialize default EQ bands (all disabled, 0dB)
+    QJsonArray bands;
+    float freqs[] = {200.0f, 1000.0f, 8000.0f};
+    float qs[]    = {0.707f, 1.0f, 0.707f};
+    for (int b = 0; b < 3; b++) {
+        QJsonObject band;
+        band["freq"]     = freqs[b];
+        band["gain_db"]  = 0.0;
+        band["q"]        = qs[b];
+        band["enabled"]  = false;
+        bands.append(band);
+    }
+    m_dspTable->item(row, 0)
+        ? m_dspTable->item(row, 0)->setData(Qt::UserRole, bands)
+        : (void)(m_dspTable->setItem(row, 0, new QTableWidgetItem()),
+                 m_dspTable->item(row, 0)->setData(Qt::UserRole, bands));
+
+    // Update stream selector
+    m_dspEqStreamSel->blockSignals(true);
+    m_dspEqStreamSel->addItem(QString("Stream %1").arg(row));
+    if (m_dspEqStreamSel->count() == 1) loadEqFromRow(0);
+    m_dspEqStreamSel->blockSignals(false);
 }
 
 void MainWindow::onRefreshDsp() {
@@ -793,6 +905,10 @@ QJsonDocument MainWindow::buildDspJson() const {
         auto* muteCb = muteW ? muteW->findChild<QCheckBox*>() : nullptr;
         s["gain"] = slider ? slider->value() / 100.0 : 1.0;
         s["mute"] = muteCb ? muteCb->isChecked() : false;
+        // P7b: include EQ bands from row property
+        QTableWidgetItem* it = m_dspTable->item(r, 0);
+        QJsonArray bands = it ? it->data(Qt::UserRole).toJsonArray() : QJsonArray();
+        s["bands"] = bands;
         streams.append(s);
     }
     QJsonObject root;
@@ -804,10 +920,16 @@ void MainWindow::buildDspFromJson(const QJsonDocument& doc) {
     QJsonObject root = doc.object();
     QJsonArray streams = root["streams"].toArray();
 
+    // Rebuild stream selector
+    m_dspEqStreamSel->blockSignals(true);
+    m_dspEqStreamSel->clear();
+
     while (m_dspTable->rowCount() < streams.size())
         onAddDspStream();
-    while (m_dspTable->rowCount() > streams.size())
+    while (m_dspTable->rowCount() > streams.size()) {
         m_dspTable->removeRow(m_dspTable->rowCount() - 1);
+        m_dspEqStreamSel->removeItem(m_dspEqStreamSel->count() - 1);
+    }
 
     for (int i = 0; i < streams.size(); i++) {
         QJsonObject s = streams[i].toObject();
@@ -821,5 +943,86 @@ void MainWindow::buildDspFromJson(const QJsonDocument& doc) {
         if (slider) slider->setValue(gainVal);
         if (label)  label->setText(QString::number(gainVal / 100.0, 'f', 2));
         if (muteCb) muteCb->setChecked(s["mute"].toBool());
+
+        // P7b: store EQ bands in row property
+        QJsonArray bands = s["bands"].toArray();
+        if (bands.isEmpty()) {
+            // backward compat: create default disabled bands
+            float freqs[] = {200.0f, 1000.0f, 8000.0f};
+            float qs[]    = {0.707f, 1.0f, 0.707f};
+            for (int b = 0; b < 3; b++) {
+                QJsonObject band;
+                band["freq"]     = freqs[b];
+                band["gain_db"]  = 0.0;
+                band["q"]        = qs[b];
+                band["enabled"]  = false;
+                bands.append(band);
+            }
+        }
+        if (!m_dspTable->item(i, 0))
+            m_dspTable->setItem(i, 0, new QTableWidgetItem());
+        m_dspTable->item(i, 0)->setData(Qt::UserRole, bands);
+
+        // Update stream label + selector
+        m_dspEqStreamSel->addItem(QString("Stream %1").arg(i));
     }
+
+    m_dspEqStreamSel->blockSignals(false);
+    if (m_dspEqStreamSel->count() > 0) loadEqFromRow(0);
+}
+
+// ── P7b: 3-band EQ slots ─────────────────────────────────
+
+void MainWindow::onDspEqStreamChanged(int idx) {
+    if (idx < 0 || idx >= m_dspTable->rowCount()) return;
+    loadEqFromRow(idx);
+}
+
+void MainWindow::loadEqFromRow(int row) {
+    if (row < 0 || row >= m_dspTable->rowCount()) return;
+    QTableWidgetItem* it = m_dspTable->item(row, 0);
+    QJsonArray bands = it ? it->data(Qt::UserRole).toJsonArray() : QJsonArray();
+
+    for (int b = 0; b < 3; b++) {
+        bool blocked = m_eqFreq[b]->blockSignals(true);
+        m_eqGain[b]->blockSignals(true);
+        m_eqQ[b]->blockSignals(true);
+        m_eqEnabled[b]->blockSignals(true);
+
+        if (b < bands.size()) {
+            QJsonObject band = bands[b].toObject();
+            m_eqFreq[b]->setValue(band["freq"].toDouble(m_eqFreq[b]->value()));
+            int gainDb = (int)(band["gain_db"].toDouble(0.0) * 10.0);
+            m_eqGain[b]->setValue(gainDb);
+            m_eqGainLabel[b]->setText(QString::number(gainDb / 10.0, 'f', 1));
+            m_eqQ[b]->setValue(band["q"].toDouble(m_eqQ[b]->value()));
+            m_eqEnabled[b]->setChecked(band["enabled"].toBool());
+        }
+
+        m_eqFreq[b]->blockSignals(blocked);
+        m_eqGain[b]->blockSignals(blocked);
+        m_eqQ[b]->blockSignals(blocked);
+        m_eqEnabled[b]->blockSignals(blocked);
+    }
+}
+
+void MainWindow::onDspEqChanged() {
+    int row = m_dspEqStreamSel->currentIndex();
+    if (row < 0 || row >= m_dspTable->rowCount()) return;
+    saveEqToRow(row);
+}
+
+void MainWindow::saveEqToRow(int row) {
+    QJsonArray bands;
+    for (int b = 0; b < 3; b++) {
+        QJsonObject band;
+        band["freq"]     = m_eqFreq[b]->value();
+        band["gain_db"]  = m_eqGain[b]->value() / 10.0;
+        band["q"]        = m_eqQ[b]->value();
+        band["enabled"]  = m_eqEnabled[b]->isChecked();
+        bands.append(band);
+    }
+    if (!m_dspTable->item(row, 0))
+        m_dspTable->setItem(row, 0, new QTableWidgetItem());
+    m_dspTable->item(row, 0)->setData(Qt::UserRole, bands);
 }

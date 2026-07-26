@@ -1,1 +1,1 @@
-{"streams":[{"gain":1.91,"mute":false}]}
+{"streams":[{"bands":[{"enabled":true,"freq":200,"gain_db":-0.4,"q":0.71},{"enabled":true,"freq":1000,"gain_db":-0.3,"q":1},{"enabled":true,"freq":8000,"gain_db":10.8,"q":0.71}],"gain":1,"mute":false}]}

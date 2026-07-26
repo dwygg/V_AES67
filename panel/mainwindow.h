@@ -18,6 +18,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QComboBox>
+#include <QDoubleSpinBox>
 
 #include "pipe_client.h"
 
@@ -77,6 +79,18 @@ private:
     void buildDspFromJson(const QJsonDocument& doc);
     QJsonDocument buildDspJson() const;
     QTableWidget* m_dspTable;
+
+    // P7b: 3-band EQ controls
+    void onDspEqStreamChanged(int idx);
+    void onDspEqChanged();
+    void loadEqFromRow(int row);
+    void saveEqToRow(int row);
+    QComboBox*      m_dspEqStreamSel;
+    QDoubleSpinBox* m_eqFreq[3];
+    QSlider*        m_eqGain[3];
+    QLabel*         m_eqGainLabel[3];
+    QDoubleSpinBox* m_eqQ[3];
+    QCheckBox*      m_eqEnabled[3];
 
     // Tray
     QSystemTrayIcon* m_tray;
