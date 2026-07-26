@@ -122,6 +122,11 @@ bool Aes67Engine::Initialize(const AudioConfig& config, const NetworkConfig& net
     m_mixingBus->GetDspConfig().SyncCount(m_routing.destinations.size());
     m_mixingBus->GetDspConfig().RedesignAll((float)m_config.sampleRate);
 
+    // P9: open shared memory bridge for capture output
+    if (hasRx) {
+        m_captureBridge.Open();
+    }
+
     // M9: Set up IPC command handler
     m_pipeServer.SetHandler([this](const std::string& cmd, const std::string& arg) -> std::string {
         // P3 heartbeat: any command from panel resets the disconnect timer
@@ -315,7 +320,7 @@ bool Aes67Engine::Start() {
             return false;
         }
 
-        if (!m_audioRenderThread.Start(&m_jitterBuffer, &m_renderStats)) {
+        if (!m_audioRenderThread.Start(&m_jitterBuffer, &m_renderStats, &m_captureBridge)) {
             Logger::Instance().Error("Failed to start audio render thread");
             m_networkReceiver.Stop();
             if (m_netConfig.enableTx) {
@@ -449,6 +454,8 @@ void Aes67Engine::Shutdown() {
     m_pipeServer.Stop();
     // P5: cleanup mixing bus
     if (m_mixingBus) { delete m_mixingBus; m_mixingBus = nullptr; }
+    // P9: close capture shared memory bridge
+    m_captureBridge.Close();
     // WasapiClient dtor calls Stop/Reset
     // ComPtr dtor releases interfaces
     // ComInitializer dtor calls CoUninitialize

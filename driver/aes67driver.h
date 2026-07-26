@@ -57,9 +57,22 @@ DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_AES67);
 //   METHOD_NEITHER，但当前 handler 里用 Irp->AssociatedIrp.SystemBuffer 取
 //   数据，那是 METHOD_BUFFERED 的用法——两者不一致，P9 实现时必须统一
 //   (建议 GET_BUFFER/GET_POSITION 改用 METHOD_BUFFERED，简单且安全)。
-#define IOCTL_AES67_GET_BUFFER      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
-#define IOCTL_AES67_SET_FORMAT      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_NEITHER, FILE_ANY_ACCESS)
-#define IOCTL_AES67_GET_POSITION    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_NEITHER, FILE_ANY_ACCESS)
+#define IOCTL_AES67_GET_BUFFER      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_AES67_SET_FORMAT      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_AES67_GET_POSITION    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_AES67_WRITE_CAPTURE   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+// P9: 共享内存环形缓冲头部（放在 g_SharedBuffer 开头 64 字节）
+#define AES67_SHM_HEADER_SIZE       64
+#define AES67_SHM_DATA_OFFSET       AES67_SHM_HEADER_SIZE
+typedef struct _AES67_SHM_HEADER {
+    volatile ULONG WriteOffset;     // 引擎写入位置（字节偏移，相对于 DATA_OFFSET）
+    volatile ULONG ReadOffset;      // 驱动读取位置
+    ULONG          Channels;
+    ULONG          SampleRate;
+    ULONG          DataSize;        // 数据区总大小（= g_SharedBufferSize - HEADER_SIZE）
+    ULONG          Reserved[11];    // 对齐到 64 字节
+} AES67_SHM_HEADER;
 
 // 用户态与驱动通信的自定义设备接口 GUID
 // {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -162,5 +175,6 @@ extern NTSTATUS PropertyHandler_WaveFilter(IN PPCPROPERTY_REQUEST PropertyReques
 // remain.
 extern DWORD g_AES67DriverVersion;
 extern DWORD g_silenceThreshold;
+extern PVOID g_SharedBuffer;             // P9: shared memory ring buffer
 
 #endif

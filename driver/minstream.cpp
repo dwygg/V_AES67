@@ -590,21 +590,58 @@ STDMETHODIMP_(void) CMiniportWaveCyclicStream::CopyFrom(
 )
 /*++
 Routine Description:
-  The CopyFrom function copies sample data from the DMA buffer.
-  Callers of CopyFrom can run at any IRQL
+  P9: Copy captured audio from shared memory ring buffer to the audio engine.
+  Called by PortCls at any IRQL. Shared memory is filled by the user-mode
+  engine (jitter buffer output).
+
+  Ring buffer layout:
+    [0..63]   AES67_SHM_HEADER (offsets, params)
+    [64..end] audio data (L24 interleaved, 48kHz stereo)
 
 Arguments:
-  Destination - Points to the destination buffer.
-  Source - Points to the source buffer.
-  ByteCount - Points to the source buffer.
+  Destination - Points to the destination buffer (audio engine wants data here).
+  Source      - Points to the DMA buffer (unused for virtual device).
+  ByteCount   - Number of bytes to copy.
 
 Return Value:
   void
 --*/
 {
-    UNREFERENCED_PARAMETER(Destination);
     UNREFERENCED_PARAMETER(Source);
-    UNREFERENCED_PARAMETER(ByteCount);
+
+    if (!g_SharedBuffer || ByteCount == 0) return;
+
+    AES67_SHM_HEADER* hdr = (AES67_SHM_HEADER*)g_SharedBuffer;
+    PBYTE dataArea = (PBYTE)g_SharedBuffer + AES67_SHM_DATA_OFFSET;
+    ULONG dataSize = hdr->DataSize;
+    if (dataSize == 0) return;
+
+    ULONG writeOff = hdr->WriteOffset;
+    ULONG readOff  = hdr->ReadOffset;
+    ULONG available;
+
+    // Calculate available data in ring buffer
+    if (writeOff >= readOff) {
+        available = writeOff - readOff;
+    } else {
+        available = dataSize - readOff + writeOff;
+    }
+
+    if (available >= ByteCount) {
+        // Enough data: copy from ring buffer
+        if (readOff + ByteCount <= dataSize) {
+            RtlCopyMemory(Destination, dataArea + readOff, ByteCount);
+        } else {
+            // Wrap-around: two chunks
+            ULONG firstChunk = dataSize - readOff;
+            RtlCopyMemory(Destination, dataArea + readOff, firstChunk);
+            RtlCopyMemory((PBYTE)Destination + firstChunk, dataArea, ByteCount - firstChunk);
+        }
+        hdr->ReadOffset = (readOff + ByteCount) % dataSize;
+    } else {
+        // Underflow: fill with silence
+        RtlZeroMemory(Destination, ByteCount);
+    }
 } // CopyFrom
 
 //=============================================================================

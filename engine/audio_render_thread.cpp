@@ -1,5 +1,6 @@
 #include "audio_render_thread.h"
 #include "jitter_buffer.h"
+#include "shared_mem.h"
 #include "logger.h"
 #include <avrt.h>
 #include <excpt.h>
@@ -34,12 +35,14 @@ bool AudioRenderThread::Initialize(IMMDevice* captureDevice, const AudioConfig& 
     return true;
 }
 
-bool AudioRenderThread::Start(JitterBuffer* jitter, RenderStats* stats) {
+bool AudioRenderThread::Start(JitterBuffer* jitter, RenderStats* stats,
+                             SharedMemBridge* captureBridge) {
     if (m_running.load(std::memory_order_acquire)) return false;
     if (!m_initialized || !jitter || !stats) return false;
 
     m_jitter = jitter;
     m_stats  = stats;
+    m_captureBridge = captureBridge;  // P9: optional driver capture output
     m_stats->Reset();
 
     ResetEvent(m_stopEvent);
@@ -178,6 +181,11 @@ void AudioRenderThread::RunLoop() {
         size_t floatBufSize = (size_t)availFrames * mixBlockAlign;
         if (bytesWritten < floatBufSize) {
             memset(pData + bytesWritten, 0, floatBufSize - bytesWritten);
+        }
+
+        // P9: forward received audio to driver shared memory (capture endpoint)
+        if (m_captureBridge && m_captureBridge->IsOpen() && bytesWritten > 0) {
+            m_captureBridge->Write(pData, (DWORD)bytesWritten);
         }
 
         // Shared-mode WASAPI expects float32 → convert int24→float from pData

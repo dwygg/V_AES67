@@ -18,6 +18,7 @@
 #include "pipe_server.h"
 #include "routing.h"
 #include "mixing_bus.h"
+#include "shared_mem.h"
 
 // ---- Network defaults ----
 constexpr char     kDefaultMulticastAddr[] = "239.69.1.128";
@@ -148,6 +149,9 @@ private:
 
     // P5 mixing bus (created in Initialize after config is valid)
     MixingBus*         m_mixingBus = nullptr;
+
+    // P9 capture output
+    SharedMemBridge    m_captureBridge;
 
     // M9 IPC
     PipeServer         m_pipeServer;

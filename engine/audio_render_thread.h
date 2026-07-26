@@ -5,6 +5,7 @@
 #include "wasapi_device.h"
 
 class JitterBuffer;
+struct SharedMemBridge;
 
 // Cross-thread render statistics — render thread writes, main thread reads.
 struct RenderStats {
@@ -33,7 +34,9 @@ public:
     bool Initialize(IMMDevice* captureDevice, const AudioConfig& config);
 
     // Start the render thread. jitter and stats must outlive the thread.
-    bool Start(JitterBuffer* jitter, RenderStats* stats);
+    // captureBridge (optional, P9): writes received audio to driver shared memory.
+    bool Start(JitterBuffer* jitter, RenderStats* stats,
+               SharedMemBridge* captureBridge = nullptr);
 
     void Stop();
 
@@ -47,6 +50,7 @@ private:
     AudioConfig        m_config;
     JitterBuffer*      m_jitter = nullptr;
     RenderStats*       m_stats  = nullptr;
+    SharedMemBridge*   m_captureBridge = nullptr;  // P9: driver capture output
 
     HANDLE             m_thread    = nullptr;
     HANDLE             m_stopEvent = nullptr;

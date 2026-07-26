@@ -35,6 +35,27 @@ static PKSDATARANGE PinDataRangePointersStream[] = {
     PKSDATARANGE(&PinDataRangesStream[0])
 };
 
+// P9: Capture pin locked to AES67 L24/48k/2ch — engine writes exactly this format
+static KSDATARANGE_AUDIO PinDataRangesCapture[] = {
+  {
+    {
+      sizeof(KSDATARANGE_AUDIO),
+      0, 0, 0,
+      STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),
+      STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM),
+      STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)
+    },
+    2,     // MaxChannels: 2 (stereo)
+    24,    // MinBitsPerSample: 24
+    24,    // MaxBitsPerSample: 24
+    48000, // MinSampleRate: 48k
+    48000  // MaxSampleRate: 48k
+  },
+};
+static PKSDATARANGE PinDataRangePointersCapture[] = {
+    PKSDATARANGE(&PinDataRangesCapture[0])
+};
+
 //=============================================================================
 static KSDATARANGE PinDataRangesBridge[] = {
   {
@@ -119,7 +140,7 @@ static PCPIN_DESCRIPTOR MiniportPins[] = {
   },
 
   // P8: Wave In Host Pin (Capture) — KSPIN_WAVE_CAPTURE_SOURCE
-  // Delivers capture data to the audio engine.
+  // P9: locked to L24/48k/2ch (AES67 profile) — engine writes this exact format
   {
     MAX_OUTPUT_STREAMS,
     MAX_OUTPUT_STREAMS,
@@ -130,8 +151,8 @@ static PCPIN_DESCRIPTOR MiniportPins[] = {
       NULL,
       0,
       NULL,
-      SIZEOF_ARRAY(PinDataRangePointersStream),
-      PinDataRangePointersStream,
+      SIZEOF_ARRAY(PinDataRangePointersCapture),
+      PinDataRangePointersCapture,
       KSPIN_DATAFLOW_OUT,
       KSPIN_COMMUNICATION_SINK,
       &KSCATEGORY_AUDIO,
