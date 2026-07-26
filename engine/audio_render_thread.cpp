@@ -169,6 +169,14 @@ void AudioRenderThread::RunLoop() {
 
         for (UINT32 i = 0; i < fullPackets; i++) {
             m_jitter->Read(pData + (size_t)i * JitterBuffer::kPayloadSize);
+            // P9: write each 1ms jitter packet to capture immediately.
+            // Batching all packets then writing at once can cause the render
+            // buffer's unused padding tail to mix with audio when availFrames
+            // is larger than the jitter data.
+            if (m_captureBridge && m_captureBridge->IsOpen()) {
+                m_captureBridge->Write(pData + (size_t)i * JitterBuffer::kPayloadSize,
+                                       JitterBuffer::kPayloadSize);
+            }
         }
         size_t bytesWritten = (size_t)fullPackets * JitterBuffer::kPayloadSize;
 
@@ -179,17 +187,16 @@ void AudioRenderThread::RunLoop() {
             size_t remainderBytes = (size_t)remainderFrames * configBlockAlign;
             memcpy(pData + bytesWritten, temp, remainderBytes);
             bytesWritten += remainderBytes;
+            // P9: write remainder to capture too
+            if (m_captureBridge && m_captureBridge->IsOpen()) {
+                m_captureBridge->Write(temp, (DWORD)remainderBytes);
+            }
         }
 
         // Pad any remaining space (float32 render buffer > L24 jitter data)
         size_t floatBufSize = (size_t)availFrames * mixBlockAlign;
         if (bytesWritten < floatBufSize) {
             memset(pData + bytesWritten, 0, floatBufSize - bytesWritten);
-        }
-
-        // P9: forward received audio to driver shared memory (capture endpoint)
-        if (m_captureBridge && m_captureBridge->IsOpen() && bytesWritten > 0) {
-            m_captureBridge->Write(pData, (DWORD)bytesWritten);
         }
 
         // Shared-mode WASAPI expects float32 → convert int24→float from pData

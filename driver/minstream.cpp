@@ -447,6 +447,15 @@ Return Value:
                 delay.LowPart                 = m_pMiniport->m_NotificationInterval;
 
                 KeSetTimerEx(m_pTimer, delay, m_pMiniport->m_NotificationInterval, m_pDpc);
+
+                // P9 fix: reset capture ring buffer offsets on stream start.
+                // Stop/Start cycles leave stale offsets → available calculation
+                // is wrong → CopyFrom reads silence or garbage → noise.
+                if (m_fCapture && g_SharedBuffer) {
+                    AES67_SHM_HEADER* hdr = (AES67_SHM_HEADER*)g_SharedBuffer;
+                    hdr->ReadOffset  = 0;
+                    hdr->WriteOffset = 0;
+                }
                 break;
 
             case KSSTATE_STOP:
@@ -619,6 +628,8 @@ Return Value:
     ULONG writeOff = hdr->WriteOffset;
     ULONG readOff  = hdr->ReadOffset;
     ULONG available;
+
+    KeMemoryBarrier();  // P9 fix: ensure we see the data written before WriteOffset was updated
 
     // Calculate available data in ring buffer
     if (writeOff >= readOff) {

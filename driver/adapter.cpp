@@ -35,7 +35,7 @@ NTSTATUS CreateMiniportTopologyAES67(OUT PUNKNOWN *, IN  REFCLSID, IN  PUNKNOWN,
 //           地址，但内核侧尚无任何代码往里写音频。P9 打通 IOCTL + 共享内存主动脉
 //           时，CSaveData::WriteData() 的 PCM 帧会落到这里，供用户态引擎映射读取。
 PVOID g_SharedBuffer = NULL;             // P9: 非分页共享内存 (非static, minstream CopyFrom 引用)
-static ULONG g_SharedBufferSize = 0x10000; // 64KB (4x 10ms @48kHz 2ch L24)
+static ULONG g_SharedBufferSize = 0x40000; // 256KB (was 64KB; more headroom for capture ring buffer)
 
 // TODO(P9): 预留给"用户态发现内核 IOCTL 接口"的符号链接。目前只声明未使用——
 //           P9 打通主动脉时，用 IoCreateSymbolicLink / IoRegisterDeviceInterface
@@ -242,26 +242,28 @@ static NTSTATUS AES67DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
     }
 
     if (code == IOCTL_AES67_WRITE_CAPTURE) {
-        // P9: engine sends captured network audio → write to ring buffer
+        // P9: engine sends captured network audio → write to ring buffer.
+        // Use single-pass byte copy instead of two RtlCopyMemory calls —
+        // a wrap-around write with two memcpy's is non-atomic: CopyFrom()
+        // on another core can run between them and see half-old/half-new data
+        // → noise/crackling. Single-pass + KeMemoryBarrier fixes this.
         if (!g_SharedBuffer) {
             Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
         } else {
             ULONG len = stack->Parameters.DeviceIoControl.InputBufferLength;
-            PVOID data = Irp->AssociatedIrp.SystemBuffer;
+            PBYTE data = (PBYTE)Irp->AssociatedIrp.SystemBuffer;
             AES67_SHM_HEADER* hdr = (AES67_SHM_HEADER*)g_SharedBuffer;
             PBYTE dataArea = (PBYTE)g_SharedBuffer + AES67_SHM_DATA_OFFSET;
             ULONG dataSize = hdr->DataSize;
 
             if (data && len > 0 && len <= dataSize) {
                 ULONG writeOff = hdr->WriteOffset;
-                if (writeOff + len <= dataSize) {
-                    RtlCopyMemory(dataArea + writeOff, data, len);
-                } else {
-                    // Wrap-around
-                    ULONG firstChunk = dataSize - writeOff;
-                    RtlCopyMemory(dataArea + writeOff, data, firstChunk);
-                    RtlCopyMemory(dataArea, (PBYTE)data + firstChunk, len - firstChunk);
+                // Single-pass copy: write byte-by-byte with wrap-around.
+                // Update offset only after ALL bytes are written.
+                for (ULONG i = 0; i < len; i++) {
+                    dataArea[(writeOff + i) % dataSize] = data[i];
                 }
+                KeMemoryBarrier();  // ensure all stores visible before offset update
                 hdr->WriteOffset = (writeOff + len) % dataSize;
                 Irp->IoStatus.Status = STATUS_SUCCESS;
                 Irp->IoStatus.Information = len;
